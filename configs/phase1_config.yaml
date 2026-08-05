@@ -1,0 +1,28 @@
+fuzzy_match:
+  company_threshold: 85
+  indicator_threshold: 80
+
+router:
+  use_llm_fallback: true
+  confidence_threshold: 0.7
+
+llm:
+  model_name: "Qwen2.5-14B-Instruct"
+  model_path: null
+  max_tokens: 100
+  temperature: 0.0
+  timeout: 30
+  max_retries: 2
+
+cache:
+  enabled: true
+  max_size: 1000
+
+defaults:
+  report_type: "consolidated"
+  reference_year: 2024
+  max_years_back: 5
+
+logging:
+  level: "INFO"
+  log_file: "logs/phase1.log"
