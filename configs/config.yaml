@@ -1,0 +1,11 @@
+source_dir: data/financial_statements
+output_dir: data/parsed_tables
+
+parser:
+  minimum_table_rows: 3
+  maximum_null_ratio: 0.7
+
+embedding:
+  model_name: bkai-foundation-models/vietnamese-bi-encoder
+  batch_size: 64
+  normalize_embeddings: true
