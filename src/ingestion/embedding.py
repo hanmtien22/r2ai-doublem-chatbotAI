@@ -1,10 +1,8 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
-import faiss
 from pathlib import Path
 import json
 
-from config_loader import load_config
+from src.config_loader import load_config
 
 
 def _embedding_config() -> dict:
@@ -39,6 +37,8 @@ def build_embedding(
     if normalize_embeddings is None:
         normalize_embeddings = config["normalize_embeddings"]
 
+    from sentence_transformers import SentenceTransformer
+
     model = SentenceTransformer(model_name)
 
     embeddings = model.encode(
@@ -61,6 +61,8 @@ def build_faiss_index(embeddings: np.ndarray):
     Return:
         index
     """
+    import faiss
+
     dimension = embeddings.shape[1]
 
     index = faiss.IndexFlatIP(dimension)
@@ -82,6 +84,8 @@ def save_faiss_artifacts(
         documents: ập văn bản
         output_dir: Đường dẫn thư mục
     """
+
+    import faiss
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -143,13 +147,12 @@ def dense_search(
             continue
 
 
-        results.apeend({
+        results.append({
             "score": float(score),
             "document": documents[index],
         })
 
     return results
-
 
 
 

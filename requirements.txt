@@ -1,0 +1,9 @@
+faiss-cpu
+numpy
+pandas
+pyarrow
+pytest
+PyYAML
+rank-bm25
+rapidfuzz
+sentence-transformers

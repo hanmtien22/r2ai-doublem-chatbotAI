@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from config_loader import DEFAULT_CONFIG_PATH, load_config
-from ingestion.pipeline import run_ingestion_pipeline
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.config_loader import DEFAULT_CONFIG_PATH, load_config
+from src.ingestion.pipeline import run_ingestion_pipeline
 
 
 def parse_args() -> argparse.Namespace:

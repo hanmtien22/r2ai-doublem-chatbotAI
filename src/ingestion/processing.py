@@ -1,13 +1,12 @@
 from pathlib import Path
 from typing import Any
+from html.parser import HTMLParser
 import re
 import unicodedata
 import json
 import pandas as pd
 from .schemas import DetectedTable
 from decimal import Decimal, InvalidOperation
-import pickle
-from rank_bm25 import BM25Okapi
 
 
 NUMBER_TOKEN = r"(?:\(?-?[\d.,]+\)?|[-—–])"
@@ -97,7 +96,44 @@ REQUIRED_COLUMNS = {
     "ticker",
     "year",
     "table_type",
+    "section",
 }
+
+TABLE_TYPE_TO_SECTION = {
+    "balance_sheet": "BS",
+    "income_statement": "IS",
+    "cash_flow": "CF",
+    "equity_statement": "EQ",
+}
+
+
+class _HTMLTableParser(HTMLParser):
+    """Collect rows and cells from an HTML table embedded in extracted text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell_parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag == "tr":
+            self._row = []
+        elif tag in {"td", "th"} and self._row is not None:
+            self._cell_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self._row is not None and self._cell_parts is not None:
+            cell = re.sub(r"\s+", " ", "".join(self._cell_parts)).strip()
+            self._row.append(cell)
+            self._cell_parts = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
 
 
 def scan_financial_files(root_path: str | Path) -> list[Path]:
@@ -201,37 +237,57 @@ def build_entity_dictionary(
 ) -> dict:
     df = pd.read_csv(csv_path)
 
-    required_columns = ["sticker", "company_name"]
+    normalized_columns = {
+        normalize_text(str(column)): column
+        for column in df.columns
+    }
+    ticker_column = next(
+        (normalized_columns[name] for name in ("ticker", "sticker", "ma ck") if name in normalized_columns),
+        None,
+    )
+    company_column = next(
+        (normalized_columns[name] for name in ("company_name", "ten cong ty") if name in normalized_columns),
+        None,
+    )
 
-    missing = required_columns - set(df.columns)
+    missing = []
+    if ticker_column is None:
+        missing.append("ticker/Mã CK")
+    if company_column is None:
+        missing.append("company_name/Tên công ty")
     if missing:
         raise ValueError(f"Thiếu cột trong code_stock.csv: {missing}")
 
     entities = {}
 
     for _, row in df.iterrows():
-        sticker = str(row["sticker"]).strip().upper()
-        company_name = str(row["company_name"]).strip()
+        ticker = str(row[ticker_column]).strip().upper()
+        company_name = str(row[company_column]).strip()
+        normalized_company_name = normalize_text(company_name)
+        short_name = normalized_company_name
+        for stopword in sorted(COMPANY_STOPWORDS, key=len, reverse=True):
+            short_name = re.sub(
+                rf"\b{re.escape(stopword)}\b",
+                " ",
+                short_name,
+            )
+        short_name = re.sub(r"\s+", " ", short_name).strip()
 
-        aliases = [sticker, company_name]
+        aliases = [ticker, company_name, normalized_company_name, short_name]
 
-        if "alias" in df.columns and pd.notna(row.get("alias")):
+        alias_column = normalized_columns.get("alias")
+        if alias_column and pd.notna(row.get(alias_column)):
             aliases.extend(
                 item.strip()
-                for item in str(row["alias"]).split("|")
+                for item in str(row[alias_column]).split("|")
                 if item.strip()
             )
 
-        aliases = sorted({
-            normalize_text(alias)
-            for alias in aliases
-            if alias
-        })
+        aliases = sorted({alias for alias in aliases if alias})
 
-        entities["sticker"] = {
-            "sticker": sticker,
-            "company_name": company_name,
-            "name_normalize": normalize_text(company_name),
+        entities[ticker] = {
+            "full_name": company_name,
+            "short_name": short_name or company_name,
             "aliases": aliases
         }
 
@@ -248,10 +304,16 @@ def build_entity_dictionary(
 
 
 def identify_table_type(line: str) -> str | None:
+    if "<table" in line.lower():
+        return None
+
     normalized = normalize_text(line)
 
+    if len(normalized) > 160:
+        return None
+
     for table_type, patterns in TABLE_PATTERNS.items():
-        if any(pattern in normalized for pattern in patterns):
+        if any(normalized.startswith(pattern) for pattern in patterns):
             return table_type
 
     return None
@@ -262,7 +324,11 @@ def detect_tables(lines: list[str]) -> list[DetectedTable]:
 
     for index, line in enumerate(lines):
         type_table = identify_table_type(line=line)
-        if type_table:
+        has_nearby_table = any(
+            "<table" in candidate.lower()
+            for candidate in lines[index + 1:index + 16]
+        )
+        if type_table and has_nearby_table:
             starts.append((index, type_table, line.strip()))
 
     tables = []
@@ -418,8 +484,42 @@ def parse_table_line(line: str) -> dict | None:
     }
 
 
+def parse_html_table_line(line: str) -> list[dict]:
+    """Parse financial rows from a single embedded HTML table."""
+    parser = _HTMLTableParser()
+    parser.feed(line)
+    parsed_rows = []
+
+    for cells in parser.rows:
+        if len(cells) < 4:
+            continue
+
+        item_code = cells[0].strip()
+        if not re.fullmatch(r"\d{2,4}[a-z]?", item_code, re.IGNORECASE):
+            continue
+
+        item_name = cells[1].strip()
+        if not item_name:
+            continue
+
+        parsed_rows.append({
+            "item_code": item_code,
+            "item_name_raw": item_name,
+            "current_value_raw": cells[-2],
+            "previous_value_raw": cells[-1],
+        })
+
+    return parsed_rows
+
+
 def parse_table_lines(lines: list[str]) -> pd.DataFrame:
     rows = []
+    html_lines = [line for line in lines if "<table" in line.lower()]
+
+    if html_lines:
+        for line in html_lines:
+            rows.extend(parse_html_table_line(line))
+        return pd.DataFrame(rows)
 
     pending_item_name = ""
 
@@ -500,7 +600,10 @@ def validate_table(
             )
 
     if "item_name_raw" in df.columns:
-        duplicate_ratio = df["item_name_raw"].duplicated().mean()
+        duplicate_columns = ["item_name_raw"]
+        if "period" in df.columns:
+            duplicate_columns.append("period")
+        duplicate_ratio = df.duplicated(subset=duplicate_columns).mean()
 
         if duplicate_ratio > 0.5:
             errors.append(
@@ -516,11 +619,13 @@ def save_parsed_table(
     ticker: str,
     year: int,
     table_type: str,
+    table_id: str | int | None = None,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_path = output_dir / f"{ticker}_{year}_{table_type}.parquet"
+    suffix = f"_{table_id}" if table_id is not None else ""
+    output_path = output_dir / f"{ticker}_{year}_{table_type}{suffix}.parquet"
     df.to_parquet(output_path, index=False)
 
     return output_path

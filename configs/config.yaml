@@ -9,3 +9,52 @@ embedding:
   model_name: bkai-foundation-models/vietnamese-bi-encoder
   batch_size: 64
   normalize_embeddings: true
+
+entity_dictionary:
+  rebuild: true
+  source_csv: data/code_stock.csv
+  output_file: entity_dictionary.json
+
+indexing:
+  enabled: true
+  output_dir: indexes
+  bm25_enabled: true
+  dense_enabled: false
+  fail_on_error: false
+
+retrieval:
+  dense_enabled: false
+  reranker_model_name: null
+  confidence_threshold: 0.5
+  rrf_k: 60
+  top_k: 5
+
+fuzzy_match:
+  company_threshold: 85
+  indicator_threshold: 80
+
+router:
+  use_llm_fallback: true
+  confidence_threshold: 0.7
+
+llm:
+  enabled: false
+  model_name: "Qwen2.5-14B-Instruct"
+  model_path: null
+  max_tokens: 100
+  temperature: 0.0
+  timeout: 30
+  max_retries: 2
+
+cache:
+  enabled: true
+  max_size: 1000
+
+defaults:
+  report_type: "consolidated"
+  reference_year: 2024
+  max_years_back: 5
+
+logging:
+  level: "INFO"
+  log_file: "logs/phase1.log"

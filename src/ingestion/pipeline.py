@@ -4,8 +4,11 @@ import traceback
 
 import pandas as pd
 
-from config_loader import load_config, resolve_project_path
+from src.config_loader import load_config, resolve_project_path
+from .indexing import build_search_indexes
 from .processing import (
+    TABLE_TYPE_TO_SECTION,
+    build_entity_dictionary,
     detect_tables,
     detect_unit,
     extract_meatdata,
@@ -62,6 +65,7 @@ def _enrich_and_normalize_table(
                 "ticker": ticker,
                 "year": report_year,
                 "table_type": detected_table.type_table,
+                "section": TABLE_TYPE_TO_SECTION[detected_table.type_table],
                 "table_name": detected_table.table_name,
                 "source_file": metadata["source_file"],
                 "source_path": metadata["source_path"],
@@ -169,12 +173,13 @@ def run_ingestion_pipeline(config: dict | None = None):
                         "errors": validation_errors,
                     })
 
-                table_path = save_parsed_table(
+                save_parsed_table(
                     df=dataframe,
                     output_dir=output_dir / "tables",
                     ticker=metadata["sticker"],
                     year=metadata["year"],
                     table_type=table.type_table,
+                    table_id=table.start_line,
                 )
 
                 records = [
@@ -195,6 +200,39 @@ def run_ingestion_pipeline(config: dict | None = None):
                 "error": str(error),
                 "traceback": traceback.format_exc(),
             })
+
+    entity_config = config.get("entity_dictionary", {})
+    if entity_config.get("rebuild", False):
+        try:
+            build_entity_dictionary(
+                resolve_project_path(entity_config.get("source_csv", "data/code_stock.csv")),
+                output_dir / entity_config.get("output_file", "entity_dictionary.json"),
+            )
+        except Exception as error:
+            errors.append({
+                "stage": "entity_dictionary",
+                "error": str(error),
+                "traceback": traceback.format_exc(),
+            })
+
+    indexing_config = config.get("indexing", {})
+    if indexing_config.get("enabled", False):
+        try:
+            index_output_dir = output_dir / indexing_config.get("output_dir", "indexes")
+            build_search_indexes(
+                documents=all_documents,
+                output_dir=index_output_dir,
+                indexing_config=indexing_config,
+                embedding_config=config.get("embedding", {}),
+            )
+        except Exception as error:
+            errors.append({
+                "stage": "indexing",
+                "error": str(error),
+                "traceback": traceback.format_exc(),
+            })
+            if indexing_config.get("fail_on_error", False):
+                raise
 
     _write_jsonl(
         output_dir / "records.jsonl",
