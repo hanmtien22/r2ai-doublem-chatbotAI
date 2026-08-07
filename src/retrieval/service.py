@@ -16,9 +16,10 @@ from src.query.models import QueryResult, RetrievalQuery
 
 @dataclass(frozen=True)
 class RetrievalHit:
-    query: RetrievalQuery | None
-    document: dict
-    score: float = 1.0
+    """Đại diện cho một tài liệu (document) khớp với truy vấn tìm kiếm."""
+    query: RetrievalQuery | None  # Truy vấn gốc tạo ra Hit này (nếu có)
+    document: dict                # Nội dung và siêu dữ liệu (metadata) của bản ghi tìm được
+    score: float = 1.0            # Điểm tự tin (Confidence score) từ 0 đến 1
 
     def to_dict(self) -> dict:
         return {
@@ -29,10 +30,16 @@ class RetrievalHit:
 
 
 class DocumentRetriever:
-    """Resolve structured query requests against normalized ingestion records."""
+    """
+    Bộ truy xuất cơ bản (Base Retriever).
+    Nhiệm vụ: Tìm kiếm CHÍNH XÁC (Exact Match) các bản ghi tài chính bằng cách
+    khớp 1-1 các metadata: Mã CP (Ticker) + Năm (Year) + Bảng (Section) + Mã chỉ tiêu (Item Code).
+    Rất nhanh (O(1)) do sử dụng Dictionary để làm Hash Index.
+    """
 
     def __init__(self, documents: Iterable[dict]):
         self._documents = list(documents)
+        # Bảng băm (Hash map) lưu trữ các tài liệu theo bộ key chính xác
         self._exact_index: dict[tuple[str, int, str, str], list[dict]] = {}
 
         for document in self._documents:
@@ -47,6 +54,7 @@ class DocumentRetriever:
 
     @staticmethod
     def _metadata_key(metadata: dict) -> tuple[str, int, str, str] | None:
+        """Tạo khóa tìm kiếm từ metadata của document (từ file jsonl)."""
         ticker = str(metadata.get("ticker", "")).upper()
         period = metadata.get("period", metadata.get("year"))
         section = metadata.get("section")
@@ -61,6 +69,7 @@ class DocumentRetriever:
 
     @staticmethod
     def _query_key(query: RetrievalQuery) -> tuple[str, int, str, str]:
+        """Tạo khóa tìm kiếm từ truy vấn của người dùng để map với _metadata_key."""
         return (
             query.ticker.upper(),
             int(query.year),
@@ -69,6 +78,7 @@ class DocumentRetriever:
         )
 
     def retrieve_query(self, query: RetrievalQuery, top_k: int = 5) -> list[RetrievalHit]:
+        """Tra cứu chính xác 1 truy vấn đơn lẻ vào bảng Hash map."""
         documents = self._exact_index.get(self._query_key(query), [])
         return [
             RetrievalHit(query=query, document=document)
@@ -76,6 +86,7 @@ class DocumentRetriever:
         ]
 
     def retrieve(self, result: QueryResult, top_k_per_query: int = 5) -> list[RetrievalHit]:
+        """Thực thi một danh sách các truy vấn và gộp (dedupe) kết quả lại."""
         hits = []
         seen_chunk_ids = set()
 
@@ -83,6 +94,7 @@ class DocumentRetriever:
             for hit in self.retrieve_query(query, top_k=top_k_per_query):
                 chunk_id = hit.document.get("chunk_id")
                 dedupe_key = (self._query_key(query), chunk_id)
+                # Chống trùng lặp (Deduplication)
                 if dedupe_key not in seen_chunk_ids:
                     hits.append(hit)
                     seen_chunk_ids.add(dedupe_key)
@@ -91,7 +103,13 @@ class DocumentRetriever:
 
 
 class HybridDocumentRetriever(DocumentRetriever):
-    """Structured retrieval with BM25, optional FAISS, fusion and validation fallback."""
+    """
+    Bộ truy xuất lai (Hybrid Retriever) kế thừa từ bộ truy xuất cơ bản.
+    Cách hoạt động: 
+    1. Cố gắng tìm chính xác (Exact match) giống lớp cha.
+    2. Nếu không tìm thấy, gọi Fallback Search sử dụng tìm kiếm mờ (BM25 + FAISS Vector).
+    3. Có thể dùng thêm Cross-Encoder (Reranker) để chấm lại điểm kết quả cho chuẩn xác nhất.
+    """
 
     def __init__(
         self,
@@ -121,18 +139,21 @@ class HybridDocumentRetriever(DocumentRetriever):
         retrieval_config: dict | None = None,
         embedding_config: dict | None = None,
     ) -> "HybridDocumentRetriever":
+        """Load toàn bộ dữ liệu Documents, BM25 Index, Faiss Index và AI Models vào RAM."""
         path = Path(path)
         documents = load_documents(path)
         index_dir = Path(index_dir) if index_dir else path.parent / "indexes"
         retrieval_config = retrieval_config or {}
         embedding_config = embedding_config or {}
 
+        # 1. Load thuật toán tìm kiếm từ khóa (BM25)
         bm25_payload = None
         bm25_path = index_dir / "bm25.pkl"
         if bm25_path.exists():
             with bm25_path.open("rb") as file:
                 bm25_payload = pickle.load(file)
 
+        # 2. Load thuật toán tìm kiếm ngữ nghĩa (FAISS Vector)
         dense_model = dense_index = reranker = None
         dense_documents = None
         faiss_path = index_dir / "faiss" / "index.faiss"
@@ -146,10 +167,10 @@ class HybridDocumentRetriever(DocumentRetriever):
             with dense_documents_path.open(encoding="utf-8") as file:
                 dense_documents = json.load(file)
 
+        # 3. Load mô hình Reranker (nếu có)
         reranker_model_name = retrieval_config.get("reranker_model_name")
         if reranker_model_name:
             from sentence_transformers import CrossEncoder
-
             reranker = CrossEncoder(reranker_model_name)
 
         return cls(
@@ -165,12 +186,14 @@ class HybridDocumentRetriever(DocumentRetriever):
 
     @staticmethod
     def _valid_document(document: dict) -> bool:
+        """Kiểm tra xem document tìm được có đủ metadata tối thiểu để trả lời không."""
         metadata = document.get("metadata", {})
         required = {"ticker", "period", "section", "item_code", "value", "source_file"}
         return bool(document.get("chunk_id")) and required.issubset(metadata)
 
     @staticmethod
     def _matches_query(document: dict, query: RetrievalQuery | None) -> bool:
+        """Kiểm tra cứng: Nếu đã biết rõ Mã CP, Năm, Loại báo cáo thì document tìm được bắt buộc phải khớp các thông tin này."""
         if query is None:
             return True
         metadata = document.get("metadata", {})
@@ -181,10 +204,10 @@ class HybridDocumentRetriever(DocumentRetriever):
         )
 
     def _hybrid_search(self, text: str, top_k: int) -> list[dict]:
+        """Thực thi tìm kiếm BM25 kết hợp FAISS Vector và dung hợp (fusion) kết quả."""
         bm25_results = []
         if self._bm25_payload is not None:
             from src.ingestion.chunk_builder import bm25_search
-
             bm25_results = bm25_search(
                 text,
                 self._bm25_payload["bm25"],
@@ -202,6 +225,7 @@ class HybridDocumentRetriever(DocumentRetriever):
                 top_k=top_k,
             )
 
+        # Trộn 2 danh sách bằng Reciprocal Rank Fusion (RRF)
         if bm25_results and dense_results:
             results = reciprocal_rank_fusion(
                 bm25_results,
@@ -212,6 +236,7 @@ class HybridDocumentRetriever(DocumentRetriever):
         else:
             results = bm25_results or dense_results
 
+        # Chấm điểm lại kết quả bằng AI (CrossEncoder) để xếp hạng chính xác nhất
         if self._reranker is not None and results:
             scores = self._reranker.predict([
                 [text, item["document"]["text"]]
@@ -229,22 +254,29 @@ class HybridDocumentRetriever(DocumentRetriever):
         query: RetrievalQuery | None,
         top_k: int,
     ) -> list[RetrievalHit]:
+        """Cơ chế dự phòng: Khi tìm chính xác thất bại, ta nối text câu hỏi với metadata để tìm kiếm ngữ nghĩa."""
         search_text = result.search_text
         if query is not None:
+            # Nhồi thêm ngữ cảnh vào text để bộ máy tìm kiếm (BM25/FAISS) dễ hiểu hơn
             search_text = (
                 f"{search_text} {query.ticker} {query.year} "
                 f"{query.section} {query.indicator_code}"
             )
 
+        # Tìm kiếm nhiều hơn yêu cầu (top_k * 5) vì lát nữa sẽ bị filter đi
         ranked = self._hybrid_search(search_text, max(top_k * 5, 20))
+        
+        # Lọc bỏ những kết quả khác Công ty/Năm so với yêu cầu
         filtered = [
             item for item in ranked
             if self._valid_document(item["document"])
             and self._matches_query(item["document"], query)
         ][:top_k]
+        
         if not filtered:
             return []
 
+        # Tự chấm điểm tự tin (Confidence score) dựa trên mức độ trùng lặp từ vựng và metadata
         query_tokens = set(remove_diacritics(search_text.lower()).split())
 
         def confidence(item: dict) -> float:
@@ -270,16 +302,21 @@ class HybridDocumentRetriever(DocumentRetriever):
         ]
 
     def retrieve(self, result: QueryResult, top_k_per_query: int = 5) -> list[RetrievalHit]:
+        """Hàm chính: Thực thi chiến lược tìm kiếm 2 lớp (Lớp 1: Exact, Lớp 2: Fallback/Hybrid)."""
+        # 1. Gọi thử lớp cha (Exact match bằng Hash map)
         hits = super().retrieve(result, top_k_per_query=top_k_per_query)
         resolved_keys = {self._query_key(hit.query) for hit in hits}
 
+        # 2. Với các truy vấn KHÔNG tìm thấy bằng exact match, gọi Fallback
         for query in result.retrieval_queries:
             if self._query_key(query) not in resolved_keys:
                 hits.extend(self._fallback_hits(result, query, top_k_per_query))
 
+        # Trương hợp câu hỏi không sinh ra được truy vấn rõ ràng (VD: Thiếu mã CP, năm)
         if not result.retrieval_queries and not hits:
             hits.extend(self._fallback_hits(result, None, top_k_per_query))
 
+        # 3. Nếu tìm thấy nhưng điểm tự tin (Confidence) thấp quá, thử nới lỏng câu hỏi (Reformulation)
         if hits and max(hit.score for hit in hits) < self._confidence_threshold:
             reformulated = " ".join([
                 result.normalized_question,
@@ -294,6 +331,7 @@ class HybridDocumentRetriever(DocumentRetriever):
             for query in retry_queries:
                 retry_hits.extend(self._fallback_hits(result, query, top_k_per_query))
             result.search_text = original_search_text
+            # Ghi đè nếu nới lỏng câu hỏi tìm ra kết quả tốt hơn
             if retry_hits:
                 hits = retry_hits
 
