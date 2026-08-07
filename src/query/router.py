@@ -6,6 +6,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Danh sách từ khóa báo hiệu câu hỏi yêu cầu tính toán (Derived Indicator)
 _DERIVED_KEYWORDS = [
     "ROE", "ROA", "EPS", "P/E", "P/B", "PER", "PBR",
     "tang truong", "tăng trưởng",
@@ -19,6 +20,7 @@ _DERIVED_KEYWORDS = [
     "asset turnover", "inventory turnover",
 ]
 
+# Danh sách từ khóa báo hiệu câu hỏi so sánh hoặc tìm Max/Min (Multi Comparison)
 _COMPARISON_KEYWORDS = [
     "so sanh", "so sánh",
     "so voi", "so với",
@@ -32,6 +34,7 @@ _COMPARISON_KEYWORDS = [
     "khac nhau", "khác nhau",
 ]
 
+# Danh sách từ khóa báo hiệu câu hỏi rác, không liên quan đến hệ thống (Out of Scope)
 _OUT_OF_SCOPE_KEYWORDS = [
     "thoi tiet", "thời tiết",
     "bong da", "bóng đá",
@@ -43,42 +46,57 @@ QUERY_TYPES = ["single_lookup", "multi_comparison", "derived_indicator", "out_of
 
 
 class QueryRouter:
+    """
+    Bộ định tuyến (Router): Phân loại câu hỏi của người dùng vào 1 trong 4 loại kịch bản.
+    Hệ thống sẽ dùng Rule-based (tìm từ khóa) trước vì nó nhanh và rẻ.
+    Chỉ khi không chắc chắn, hệ thống mới gọi LLM (Mô hình ngôn ngữ lớn) để phân loại.
+    """
     def __init__(self, llm_client=None, use_llm_fallback: bool = True):
         self._llm_client = llm_client
         self._use_llm_fallback = use_llm_fallback
 
     def classify(self, entities: dict, question: str) -> str:
+        """Phân loại bằng Quy tắc (Rule-based)."""
         q_lower = question.lower()
 
+        # 1. Kiểm tra xem có phải câu hỏi ngoài lề không
         if self._is_out_of_scope(q_lower):
             logger.debug("Router: out_of_scope")
             return "out_of_scope"
 
+        # 2. Kiểm tra xem có phải câu hỏi cần tính toán công thức không
         if self._is_derived(q_lower):
             logger.debug("Router: derived_indicator (keyword match)")
             return "derived_indicator"
 
+        # Đếm số lượng thực thể được trích xuất
         num_tickers = len(entities.get("tickers", []))
         num_years = len(entities.get("years", []))
         is_comparison = self._has_comparison_keywords(q_lower)
 
+        # 3. Nếu hỏi nhiều hơn 1 công ty, hoặc nhiều hơn 1 năm, hoặc có từ khóa "so sánh"
         if num_tickers > 1 or num_years > 1 or is_comparison:
             logger.debug("Router: multi_comparison (tickers=%d, years=%d, comparison=%s)",
                          num_tickers, num_years, is_comparison)
             return "multi_comparison"
 
+        # 4. Mặc định là tra cứu đơn giản 1 chỉ tiêu của 1 công ty trong 1 năm
         logger.debug("Router: single_lookup (default)")
         return "single_lookup"
 
     def route(self, entities: dict, question: str) -> str:
         """Use deterministic routing first and LLM only for ambiguous defaults."""
         rule_result = self.classify(entities, question)
+        
+        # Nếu rule-based phán đoán là tra cứu đơn giản (single_lookup) nhưng thực ra câu hỏi 
+        # rất phức tạp, ta sẽ nhờ LLM kiểm tra lại (nếu cấu hình cho phép).
         if (
             self._use_llm_fallback
             and self._llm_client is not None
             and rule_result == "single_lookup"
         ):
             return self.classify_with_llm(entities, question)
+            
         return rule_result
 
     def _is_derived(self, q_lower: str) -> bool:
@@ -109,6 +127,7 @@ class QueryRouter:
         return False
 
     def classify_with_llm(self, entities: dict, question: str) -> str:
+        """Dùng LLM (như GPT hoặc Qwen) để phân loại câu hỏi thay vì quy tắc."""
         if not self._llm_client:
             return self.classify(entities, question)
 
@@ -133,6 +152,7 @@ class QueryRouter:
 
         try:
             result = self._llm_client.generate(prompt, max_tokens=20).strip().lower()
+            # Dọn dẹp câu trả lời của LLM (chỉ giữ lại chữ cái và dấu gạch dưới)
             result = re.sub(r"[^a-z_]", "", result)
             if result in QUERY_TYPES:
                 logger.debug("LLM Router: %s", result)
@@ -140,4 +160,5 @@ class QueryRouter:
         except Exception as e:
             logger.warning("LLM Router failed: %s", e)
 
+        # Nếu LLM lỗi, fallback về lại Rule-based
         return self.classify(entities, question)
