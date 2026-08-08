@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Any
 from html.parser import HTMLParser
@@ -8,7 +9,10 @@ import pandas as pd
 from .schemas import DetectedTable
 from decimal import Decimal, InvalidOperation
 
+logger = logging.getLogger(__name__)
 
+MAX_INT64 = 9_223_372_036_854_775_807
+MIN_INT64 = -9_223_372_036_854_775_808
 NUMBER_TOKEN = r"(?:\(?-?[\d.,]+\)?|[-—–])"
 
 COMPANY_STOPWORDS = [
@@ -152,9 +156,12 @@ def scan_financial_files(root_path: str | Path) -> list[Path]:
         root_path = Path(root_path)
 
     if not root_path.exists():
+        logger.error("Thư mục không tồn tại: %s", root_path)
         raise FileNotFoundError(f"Không tìm thấy thư mục: {root_path}")
 
-    return sorted(root_path.rglob("*.txt"))
+    files = sorted(root_path.rglob("*.txt"))
+    logger.info("Scanned financial files in root_path=%s: found %d files", root_path, len(files))
+    return files
 
 
 def extract_meatdata(path: Path) -> dict[str, Any]:
@@ -195,11 +202,14 @@ def extract_meatdata(path: Path) -> dict[str, Any]:
             sticker = parts[year_index - 1].upper()
 
     if sticker is None:
+        logger.error("Không xác định được sticker từ path: %s", path)
         raise ValueError(f"Không xác định được sticker từ path: {path}")
 
     if year is None:
+        logger.error("Không xác định được year từ path: %s", path)
         raise ValueError(f"Không xác định được year từ path: {path}")
 
+    logger.debug("Extracted metadata from path=%s: sticker=%s, year=%s", path, sticker, year)
     return {
         "sticker": sticker,
         "year" : year,
@@ -235,8 +245,9 @@ def build_entity_dictionary(
         csv_path: str | Path,
         output_path: str | Path
 ) -> dict:
+    logger.info("Building entity dictionary from csv_path=%s", csv_path)
     df = pd.read_csv(csv_path)
-
+    
     normalized_columns = {
         normalize_text(str(column)): column
         for column in df.columns
@@ -256,6 +267,7 @@ def build_entity_dictionary(
     if company_column is None:
         missing.append("company_name/Tên công ty")
     if missing:
+        logger.error("Thiếu cột trong entity dictionary csv (%s): %s", csv_path, missing)
         raise ValueError(f"Thiếu cột trong code_stock.csv: {missing}")
 
     entities = {}
@@ -299,6 +311,8 @@ def build_entity_dictionary(
         json.dumps(entities, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+    logger.info("Built entity dictionary with %d entities at output_path=%s", len(entities), output_path)
 
     return entities
 
@@ -351,7 +365,11 @@ def detect_tables(lines: list[str]) -> list[DetectedTable]:
                 lines=lines[start:end]
             ))
         except ValueError as e:
+            logger.warning("Dữ liệu không hợp lệ khi detect tables: %s", e)
             print(f"Dữ liệu không hợp lệ: {e}.")
+
+    table_types = [t.type_table for t in tables]
+    logger.info("Detected %d tables from %d lines: table_types=%s", len(tables), len(lines), table_types)
 
     return tables
 
@@ -365,22 +383,32 @@ def parse_number(value: str | int | float | None) -> Decimal:
         return Decimal(str(value))
 
     text = str(value).strip().lower()
-    negative = False
 
     if text in NULL_VALUES:
         return None
 
-    if text.startswith("(") and text.endswith(")"):
-        negative = True
-        text = text[1:-1].strip()
+    pattern = r"\(?-?\d{1,3}(?:[.,]\d{3})+\)?"
+    matches = re.findall(pattern, text)
 
-    if text.startswith("-"):
-        negative = True
-        text = text[1:].strip()
+    if matches:
+        text = matches[0]
 
+    else:
+        match = re.search(r"\(?-?\d[\d.,]*\)?", text)
+
+        if match:
+            text = match.group(0)
+
+    negative = False
+
+    if "(" in text or ")" in text or text.startswith("-"):
+        negative = True
+
+    text = re.sub(r"[()\-]", "", text).strip()
     # Loại bỏ khoảng trắng và ký hiệu tiền tệ
     text = re.sub(r"\s+", "", text)
     text = re.sub(r"(vnd|vnđ|đồng|dong)$", "", text)
+
 
     # 1.234.567 hoặc 1,234,567
     if re.fullmatch(r"\d{1,3}([.,]\d{3})+", text):
@@ -517,10 +545,14 @@ def parse_table_lines(lines: list[str]) -> pd.DataFrame:
     html_lines = [line for line in lines if "<table" in line.lower()]
 
     if html_lines:
+        logger.debug("Parsing table lines using HTML parser (lines_count=%d)", len(lines))
         for line in html_lines:
             rows.extend(parse_html_table_line(line))
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        logger.info("Parsed %d rows from HTML table lines", len(df))
+        return df
 
+    logger.debug("Parsing table lines using text parser (lines_count=%d)", len(lines))
     pending_item_name = ""
 
     for line in lines:
@@ -545,7 +577,9 @@ def parse_table_lines(lines: list[str]) -> pd.DataFrame:
 
         rows.append(parsed)
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    logger.info("Parsed %d rows from text table lines", len(df))
+    return df
 
 def is_header_line(line: str) -> bool:
     normalized = normalize_text(line)
@@ -610,11 +644,16 @@ def validate_table(
                 f"Tỷ lệ tên chỉ tiêu trùng quá cao: {duplicate_ratio:.2%}"
             )
 
+    if errors:
+        logger.warning("Table validation found errors (shape=%s): %s", df.shape, errors)
+    else:
+        logger.debug("Table validation passed for dataframe shape=%s", df.shape)
+
     return errors
 
 
 def save_parsed_table(
-    df,
+    df: pd.DataFrame,
     output_dir: str | Path,
     ticker: str,
     year: int,
@@ -626,7 +665,24 @@ def save_parsed_table(
 
     suffix = f"_{table_id}" if table_id is not None else ""
     output_path = output_dir / f"{ticker}_{year}_{table_type}{suffix}.parquet"
-    df.to_parquet(output_path, index=False)
+
+    df_to_save = df.copy()
+
+    if "value" in df_to_save.columns:
+        df_to_save["value"] = pd.to_numeric(
+            df_to_save["value"],
+            errors="coerce"
+        )
+
+    for col in df_to_save.columns:
+        if pd.api.types.is_integer_dtype(df_to_save[col]):
+            if (df_to_save[col] > MAX_INT64).any() or (df_to_save[col] < MIN_INT64).any():
+                df_to_save[col] = df_to_save[col].astype("float64")
+
+        elif df_to_save[col].dtype == "object":
+            df_to_save[col] = df_to_save[col].astype(str)
+
+    logger.info("Saved parsed table to %s (ticker=%s, year=%d, type=%s)", output_path, ticker, year, table_type)
 
     return output_path
 

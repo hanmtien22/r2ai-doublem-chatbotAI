@@ -1,14 +1,20 @@
-import numpy as np
-from pathlib import Path
 import json
+import logging
+from pathlib import Path
+import numpy as np
 
 from src.config_loader import load_config
 
+logger = logging.getLogger(__name__)
+
 
 def _embedding_config() -> dict:
+    logger.debug("Loading embedding configuration...")
     config = load_config().get("embedding")
     if not isinstance(config, dict):
+        logger.error("Missing 'embedding' section in config.yaml")
         raise ValueError("Thiếu section 'embedding' trong config.yaml")
+    logger.debug("Successfully loaded embedding configuration.")
     return config
 
 
@@ -37,6 +43,10 @@ def build_embedding(
     if normalize_embeddings is None:
         normalize_embeddings = config["normalize_embeddings"]
 
+    logger.info(
+        f"Building embeddings for {len(texts)} texts using model='{model_name}', batch_size={batch_size}, normalize_embeddings={normalize_embeddings}"
+    )
+
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_name)
@@ -49,6 +59,7 @@ def build_embedding(
         convert_to_numpy=True,
     )
 
+    logger.info(f"Built embeddings with shape: {embeddings.shape}")
     return embeddings.astype("float32")
 
 def build_faiss_index(embeddings: np.ndarray):
@@ -64,10 +75,13 @@ def build_faiss_index(embeddings: np.ndarray):
     import faiss
 
     dimension = embeddings.shape[1]
+    vector_count = embeddings.shape[0]
+    logger.info(f"Building FAISS index with dimension={dimension} for {vector_count} vectors")
 
     index = faiss.IndexFlatIP(dimension)
     index.add(embeddings)
 
+    logger.info("Successfully built FAISS index")
     return index
 
 
@@ -81,13 +95,14 @@ def save_faiss_artifacts(
     
     Parameters:
         index: Index faiss
-        documents: ập văn bản
+        documents: Tập văn bản
         output_dir: Đường dẫn thư mục
     """
 
     import faiss
 
     output_dir = Path(output_dir)
+    logger.info(f"Saving FAISS index and {len(documents)} documents to {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     faiss.write_index(
@@ -105,6 +120,7 @@ def save_faiss_artifacts(
             ensure_ascii=False,
             indent=2,
         )
+    logger.info(f"Successfully saved FAISS artifacts to {output_dir}")
 
 def dense_search(
         query: str,
@@ -129,6 +145,7 @@ def dense_search(
 
     """
 
+    logger.info(f"Performing dense search for query: '{query}' with top_k={top_k}")
     if normalize_embeddings is None:
         normalize_embeddings = _embedding_config()["normalize_embeddings"]
 
@@ -152,7 +169,5 @@ def dense_search(
             "document": documents[index],
         })
 
+    logger.info(f"Dense search completed with {len(results)} results")
     return results
-
-
-

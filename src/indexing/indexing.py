@@ -1,13 +1,14 @@
 from __future__ import annotations
-
+import logging
 from pathlib import Path
-
-from src.ingestion.chunk_builder import build_bm25_index
-from src.ingestion.embedding import (
+from .bm25 import build_bm25_index
+from src.indexing.embedding import (
     build_embedding,
     build_faiss_index,
     save_faiss_artifacts,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_search_indexes(
@@ -21,12 +22,25 @@ def build_search_indexes(
     output_dir.mkdir(parents=True, exist_ok=True)
     artifacts = {}
 
-    if indexing_config.get("bm25_enabled", True) and documents:
+    bm25_enabled = indexing_config.get("bm25_enabled", True)
+    dense_enabled = indexing_config.get("dense_enabled", False)
+
+    logger.info(
+        "Building search indexes: document_count=%d, output_dir=%s, bm25_enabled=%s, dense_enabled=%s",
+        len(documents),
+        output_dir,
+        bm25_enabled,
+        dense_enabled,
+    )
+
+    if bm25_enabled and documents:
+        logger.info("Building BM25 index")
         bm25_path = output_dir / "bm25.pkl"
         build_bm25_index(documents, bm25_path)
         artifacts["bm25"] = str(bm25_path)
 
-    if indexing_config.get("dense_enabled", False) and documents:
+    if dense_enabled and documents:
+        logger.info("Building dense FAISS index")
         embeddings = build_embedding(
             [document["text"] for document in documents],
             model_name=embedding_config.get("model_name"),
@@ -37,5 +51,7 @@ def build_search_indexes(
         dense_dir = output_dir / "faiss"
         save_faiss_artifacts(index, documents, dense_dir)
         artifacts["faiss"] = str(dense_dir / "index.faiss")
+
+    logger.info("Finished building search indexes. Final artifacts: %s", artifacts)
 
     return artifacts

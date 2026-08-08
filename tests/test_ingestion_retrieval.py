@@ -10,7 +10,7 @@ from src.ingestion.chunk_builder import (
     build_bm25_index,
     load_documents,
 )
-from src.ingestion.embedding import dense_search
+from src.indexing.embedding import dense_search
 from src.ingestion.pipeline import run_ingestion_pipeline
 from src.ingestion.processing import build_entity_dictionary, parse_html_table_line
 from src.query.pipeline import QueryPipeline
