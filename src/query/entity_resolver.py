@@ -7,6 +7,7 @@ from src.utils.text import remove_diacritics
 
 logger = logging.getLogger(__name__)
 
+# Thử import RapidFuzz (thư viện tìm kiếm chuỗi mờ/nhanh)
 try:
     from rapidfuzz import fuzz, process as rf_process
     HAS_RAPIDFUZZ = True
@@ -16,11 +17,16 @@ except ImportError:
 
 
 class EntityResolver:
+    """
+    Nhận nhiệm vụ "giải quyết" (resolve) sự mập mờ của các thực thể.
+    Ví dụ người dùng gõ "vinamil", hệ thống sẽ dùng thuật toán Fuzzy String Matching 
+    để sửa thành "VNM". Nếu vẫn không được, có thể gọi fallback xuống LLM để đoán.
+    """
     def __init__(
         self,
         entity_dict: dict,
-        company_threshold: int = 85,
-        indicator_threshold: int = 80,
+        company_threshold: int = 85,    # Ngưỡng điểm (0-100) để chấp nhận là đúng công ty
+        indicator_threshold: int = 80,  # Ngưỡng điểm để chấp nhận là đúng chỉ tiêu
         llm_client=None,
     ):
         self._entity_dict = entity_dict
@@ -28,6 +34,7 @@ class EntityResolver:
         self._indicator_threshold = indicator_threshold
         self._llm_client = llm_client
 
+        # Tạo danh sách tra cứu phẳng (flat list) bao gồm tất cả các cách gọi của công ty
         self._all_company_names: list[tuple[str, str]] = []
         for ticker, info in entity_dict.items():
             if "full_name" in info:
@@ -49,6 +56,7 @@ class EntityResolver:
             normalized_name = remove_diacritics(name.lower().strip())
             if len(normalized_name) < 4:
                 continue
+            # Tính điểm tương đồng của tên công ty so với toàn bộ câu text
             score = fuzz.partial_ratio(normalized_name, normalized_text)
             if score >= self._company_threshold:
                 scores[ticker] = max(scores.get(ticker, 0), score)
@@ -59,13 +67,16 @@ class EntityResolver:
         ]
 
     def resolve_company(self, mention: str) -> Optional[str]:
+        """Giải quyết 1 cụm từ (mention) chỉ định và trả về ticker."""
         mention_lower = mention.lower().strip()
 
+        # 1. Thử khớp chính xác
         for name, ticker in self._all_company_names:
             if name.lower() == mention_lower:
                 logger.debug("Exact match: '%s' -> %s", mention, ticker)
                 return ticker
 
+        # 2. Thử Fuzzy Match (sai chính tả một chút)
         if HAS_RAPIDFUZZ:
             names = [name for name, _ in self._all_company_names]
             result = rf_process.extractOne(
@@ -80,6 +91,7 @@ class EntityResolver:
                 logger.debug("Fuzzy match: '%s' -> %s (score=%d)", mention, ticker, score)
                 return ticker
 
+        # 3. Fallback: Dùng trí tuệ nhân tạo (LLM) để đoán
         if self._llm_client:
             return self._resolve_company_llm(mention)
 
@@ -87,6 +99,7 @@ class EntityResolver:
         return None
 
     def _resolve_company_llm(self, mention: str) -> Optional[str]:
+        """Dùng LLM để đoán mã công ty nếu các cách trên đều thất bại."""
         tickers_list = ", ".join(
             f"{t}: {info.get('full_name', '')}"
             for t, info in self._entity_dict.items()
@@ -107,6 +120,7 @@ class EntityResolver:
         return None
 
     def resolve_indicator(self, mention: str, all_indicators: list[dict]) -> Optional[dict]:
+        """Giải quyết sự mập mờ trong cách gọi các chỉ tiêu tài chính."""
         mention_lower = mention.lower().strip()
         mention_no_dia = remove_diacritics(mention_lower)
 
