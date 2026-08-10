@@ -114,7 +114,7 @@ BS.400 → Vốn chủ sở hữu
 ### 3. Chạy ingestion toàn bộ dữ liệu
 
 ```bash
-.venv/bin/python -m src.pipeline --config configs/config.yaml
+uv run -m src.pipeline --config configs/config.yaml
 ```
 
 Theo cấu hình mặc định, đầu vào là `data/financial_statements` và đầu ra là

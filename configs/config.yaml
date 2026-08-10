@@ -10,10 +10,6 @@ embedding:
   batch_size: 64
   normalize_embeddings: true
 
-entity_dictionary:
-  rebuild: true
-  source_csv: data/code_stock.csv
-  output_file: entity_dictionary.json
 
 indexing:
   enabled: true
@@ -58,3 +54,24 @@ defaults:
 logging:
   level: "INFO"
   log_file: "logs/phase1.log"
+
+
+dictionaries:
+  root_dir: data/dictionaries
+
+  entity_dictionary: entity_dictionary.json
+  indicator_aliases: indicator_aliases.json
+  schema_mapping: schema_mapping.json
+  abbreviations: abbreviations.json
+  formula_library: formula_library.json
+
+dictionary_builder:
+  enabled: true
+  min_count: 5
+  report_file: dictionary_report.json
+
+entity_dictionary:
+  rebuild: true
+  source_csv: data/code_stock.csv
+  questions_file: data/questions/questions.jsonl
+  output_file: entity_dictionary.json
