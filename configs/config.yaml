@@ -5,6 +5,13 @@ parser:
   minimum_table_rows: 3
   maximum_null_ratio: 0.7
 
+notes:
+  enabled: true
+  output_dir: notes
+  max_chars: 3000
+  overlap_chars: 300
+  min_chars: 100
+
 embedding:
   model_name: bkai-foundation-models/vietnamese-bi-encoder
   batch_size: 64

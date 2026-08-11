@@ -110,8 +110,40 @@ def test_ingestion_builds_entity_dictionary_and_bm25_index(tmp_path):
     })
 
     assert result["error_count"] == 0
-    assert (output_dir / "entity_dictionary.json").exists()
+    assert (output_dir / "dictionaries" / "entity_dictionary.json").exists()
     assert (output_dir / "indexes" / "bm25.pkl").exists()
+
+
+def test_generated_dictionaries_are_scoped_to_output_directory(tmp_path):
+    source_dir = tmp_path / "source" / "AAA" / "2025" / "report"
+    source_dir.mkdir(parents=True)
+    (source_dir / "sample_extracted.txt").write_text(
+        "\n".join([
+            "BÁO CÁO KẾT QUẢ HOẠT ĐỘNG KINH DOANH",
+            "Đơn vị tính: VND",
+            SAMPLE_TABLE,
+        ]),
+        encoding="utf-8",
+    )
+    shared_dir = tmp_path / "shared-dictionaries"
+    shared_dir.mkdir()
+    shared_aliases = shared_dir / "indicator_aliases.json"
+    shared_aliases.write_text('{"shared": "IS.10"}', encoding="utf-8")
+    output_dir = tmp_path / "output"
+
+    run_ingestion_pipeline({
+        "source_dir": str(source_dir),
+        "output_dir": str(output_dir),
+        "parser": {"minimum_table_rows": 3, "maximum_null_ratio": 0.7},
+        "dictionaries": {"root_dir": str(shared_dir)},
+        "dictionary_builder": {"enabled": True, "min_count": 1},
+        "entity_dictionary": {"rebuild": False},
+        "indexing": {"enabled": False},
+    })
+
+    assert shared_aliases.read_text(encoding="utf-8") == '{"shared": "IS.10"}'
+    assert (output_dir / "indicator_aliases.json").exists()
+    assert (output_dir / "schema_mapping.json").exists()
 
 
 def test_hybrid_retrieval_falls_back_to_bm25(tmp_path):

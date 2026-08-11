@@ -7,7 +7,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.config_loader import DEFAULT_CONFIG_PATH, load_config
+from src.config_loader import DEFAULT_CONFIG_PATH, configure_logging, load_config
 from src.ingestion.pipeline import run_ingestion_pipeline
 
 
@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     config = load_config(args.config)
+    configure_logging(config)
 
     if args.source_dir:
         config["source_dir"] = args.source_dir

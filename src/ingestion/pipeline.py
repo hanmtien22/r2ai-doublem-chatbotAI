@@ -1,524 +1,199 @@
-# import logging
-# from pathlib import Path
-# import traceback
-# from src.config_loader import load_config, resolve_project_path
-# from ..indexing.indexing import build_search_indexes
-# from .chunk_builder import (
-#     json_safe_record,
-#     build_retrieval_documents,
-#     enrich_and_normalize_table,
-#     write_jsonl
-# )
+"""End-to-end ingestion orchestration for statements and disclosures."""
 
-# from .processing import (
-#     scan_financial_files,
-#     extract_meatdata,
-#     detect_tables,
-#     parse_table_lines,
-#     validate_table,
-#     save_parsed_table,
-#     build_entity_dictionary
-# )
+from __future__ import annotations
 
-# logger = logging.getLogger(__name__)
-
-
-# def run_ingestion_pipeline(config: dict | None = None):
-#     config = load_config() if config is None else config
-
-#     source_dir = resolve_project_path(config["source_dir"])
-#     output_dir = resolve_project_path(config["output_dir"])
-#     parser_config = config["parser"]
-
-#     logger.info(
-#         "Starting ingestion pipeline with source_dir=%s, output_dir=%s",
-#         source_dir,
-#         output_dir,
-#     )
-
-#     output_dir.mkdir(parents=True, exist_ok=True)
-
-#     files = scan_financial_files(source_dir)
-#     logger.info("Found %d financial files to process", len(files))
-
-#     all_records = []
-#     all_documents = []
-#     errors = []
-
-#     for path in files:
-#         logger.info("Processing file: %s", path)
-#         try:
-#             metadata = extract_meatdata(path)
-
-#             text = path.read_text(
-#                 encoding="utf-8",
-#                 errors="replace",
-#             )
-
-#             lines = text.splitlines()
-#             detected_tables = detect_tables(lines)
-#             logger.info(
-#                 "Detected %d tables in %s", len(detected_tables), path.name
-#             )
-
-#             for table in detected_tables:
-#                 logger.debug(
-#                     "Parsing table '%s' (type=%s) in %s",
-#                     table.table_name,
-#                     table.type_table,
-#                     path.name,
-#                 )
-#                 dataframe = parse_table_lines(table.lines)
-
-#                 if dataframe.empty:
-#                     logger.warning(
-#                         "Empty dataframe for table '%s' in %s",
-#                         table.table_name,
-#                         path.name,
-#                     )
-#                     errors.append({
-#                         "source_file": str(path),
-#                         "table_type": table.type_table,
-#                         "errors": [
-#                             f"Không parse được bảng {table.table_name}"
-#                         ],
-#                     })
-#                     continue
-
-#                 logger.debug(
-#                     "Enriching table '%s' (input rows=%d)",
-#                     table.table_name,
-#                     len(dataframe),
-#                 )
-#                 dataframe = enrich_and_normalize_table(
-#                     dataframe=dataframe,
-#                     document_text="\n".join(table.lines),
-#                     metadata=metadata,
-#                     detected_table=table,
-#                 )
-
-#                 validation_errors = validate_table(
-#                     dataframe,
-#                     minimum_table_rows=parser_config["minimum_table_rows"],
-#                     maximum_null_ratio=parser_config["maximum_null_ratio"],
-#                 )
-
-#                 if validation_errors:
-#                     logger.warning(
-#                         "Validation errors for table '%s' in %s: %s",
-#                         table.type_table,
-#                         path.name,
-#                         validation_errors,
-#                     )
-#                     errors.append({
-#                         "source_file": str(path),
-#                         "table_type": table.type_table,
-#                         "errors": validation_errors,
-#                     })
-
-#                 save_parsed_table(
-#                     df=dataframe,
-#                     output_dir=output_dir / "tables",
-#                     ticker=metadata["sticker"],
-#                     year=metadata["year"],
-#                     table_type=table.type_table,
-#                     table_id=table.start_line,
-#                 )
-#                 logger.debug("Saved parsed table for %s", metadata["sticker"])
-
-#                 records = [
-#                     json_safe_record(record)
-#                     for record in dataframe.to_dict(orient="records")
-#                 ]
-#                 all_records.extend(records)
-
-#                 documents = build_retrieval_documents(
-#                     dataframe=dataframe,
-#                     detected_table=table,
-#                 )
-#                 all_documents.extend(documents)
-#                 logger.debug(
-#                     "Added %d records and %d documents for table %s",
-#                     len(records),
-#                     len(documents),
-#                     table.type_table,
-#                 )
-
-#         except Exception as error:
-#             logger.error("Error processing file %s: %s", path, error, exc_info=True)
-#             errors.append({
-#                 "source_file": str(path),
-#                 "error": str(error),
-#                 "traceback": traceback.format_exc(),
-#             })
-
-#     entity_config = config.get("entity_dictionary", {})
-#     if entity_config.get("rebuild", False):
-#         logger.info("Rebuilding entity dictionary...")
-#         try:
-#             build_entity_dictionary(
-#                 resolve_project_path(entity_config.get("source_csv", "data/code_stock.csv")),
-#                 output_dir / entity_config.get("output_file", "entity_dictionary.json"),
-#             )
-#             logger.info("Entity dictionary built successfully.")
-#         except Exception as error:
-#             logger.error("Error building entity dictionary: %s", error, exc_info=True)
-#             errors.append({
-#                 "stage": "entity_dictionary",
-#                 "error": str(error),
-#                 "traceback": traceback.format_exc(),
-#             })
-
-#     indexing_config = config.get("indexing", {})
-#     if indexing_config.get("enabled", False):
-#         logger.info("Building search indexes stage...")
-#         try:
-#             index_output_dir = output_dir / indexing_config.get("output_dir", "indexes")
-#             build_search_indexes(
-#                 documents=all_documents,
-#                 output_dir=index_output_dir,
-#                 indexing_config=indexing_config,
-#                 embedding_config=config.get("embedding", {}),
-#             )
-#             logger.info("Search indexing stage completed.")
-#         except Exception as error:
-#             logger.error("Error in indexing stage: %s", error, exc_info=True)
-#             errors.append({
-#                 "stage": "indexing",
-#                 "error": str(error),
-#                 "traceback": traceback.format_exc(),
-#             })
-#             if indexing_config.get("fail_on_error", False):
-#                 raise
-
-#     logger.info("Writing output jsonl files...")
-#     write_jsonl(
-#         output_dir / "records.jsonl",
-#         all_records,
-#     )
-
-#     write_jsonl(
-#         output_dir / "retrieval_documents.jsonl",
-#         all_documents,
-#     )
-
-#     write_jsonl(
-#         output_dir / "ingestion_errors.jsonl",
-#         errors,
-#     )
-
-#     summary = {
-#         "file_count": len(files),
-#         "record_count": len(all_records),
-#         "document_count": len(all_documents),
-#         "error_count": len(errors),
-#     }
-#     logger.info("Ingestion pipeline completed. Summary: %s", summary)
-
-#     return summary
-
+import json
 import logging
 from pathlib import Path
 import traceback
-from src.config_loader import load_config, resolve_project_path
+
+from src.config_loader import configure_logging, load_config, resolve_project_path
 from ..indexing.indexing import build_search_indexes
 from .chunk_builder import (
-    json_safe_record,
-    build_retrieval_documents,
-    enrich_and_normalize_table,
-    write_jsonl
+    build_retrieval_documents, enrich_and_normalize_table, json_safe_record,
+    write_jsonl,
 )
-
+from .notes import build_notes_chunks, build_notes_retrieval_documents, save_notes_chunks
 from .processing import (
-    scan_financial_files,
-    extract_meatdata,
-    detect_tables,
-    parse_table_lines,
-    validate_table,
-    save_parsed_table,
-    build_entity_dictionary,
-    create_dictionary_stats,
-    collect_dictionary_features,
-    build_indicator_aliases_from_stats,
-    build_schema_mapping_from_stats,
-    build_dictionary_report,
-    save_json,
+    build_dictionary_report, build_entity_dictionary,
+    build_indicator_aliases_from_stats, build_schema_mapping_from_stats,
+    collect_dictionary_features, create_dictionary_stats, detect_tables,
+    extract_meatdata, parse_table_lines, save_json, save_parsed_table,
+    infer_report_type, scan_financial_files, validate_table,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def run_ingestion_pipeline(config: dict | None = None):
+def run_ingestion_pipeline(config: dict | None = None) -> dict:
     config = load_config() if config is None else config
-
+    if config.get("logging"):
+        configure_logging(config)
     source_dir = resolve_project_path(config["source_dir"])
     output_dir = resolve_project_path(config["output_dir"])
-    parser_config = config["parser"]
-
-    logger.info(
-        "Starting ingestion pipeline with source_dir=%s, output_dir=%s",
-        source_dir,
-        output_dir,
-    )
-
+    parser_config = config.get("parser", {})
+    notes_config = config.get("notes", {})
     output_dir.mkdir(parents=True, exist_ok=True)
 
     files = scan_financial_files(source_dir)
-    logger.info("Found %d financial files to process", len(files))
-
-    all_records = []
-    all_documents = []
-    errors = []
+    all_records: list[dict] = []
+    all_documents: list[dict] = []
+    errors: list[dict] = []
     dictionary_stats = create_dictionary_stats()
+    statement_count = 0
+    notes_chunk_count = 0
 
     for path in files:
+        file_record_start = len(all_records)
+        file_document_start = len(all_documents)
+        file_error_start = len(errors)
         logger.info("Processing file: %s", path)
         try:
             metadata = extract_meatdata(path)
-
-            text = path.read_text(
-                encoding="utf-8",
-                errors="replace",
-            )
-
+            text = path.read_text(encoding="utf-8", errors="replace")
             lines = text.splitlines()
-            detected_tables = detect_tables(lines)
-            logger.info(
-                "Detected %d tables in %s", len(detected_tables), path.name
-            )
+            tables = detect_tables(lines)
+            if metadata["report_type"] is None:
+                metadata["report_type"] = infer_report_type(lines, tables)
+                if metadata["report_type"] is None:
+                    metadata["report_type"] = config.get("defaults", {}).get("report_type", "consolidated")
+                    logger.warning("Could not detect report_type for %s; using %s", path, metadata["report_type"])
+            counts: dict[str, int] = {}
+            for table in tables:
+                counts[table.type_table] = counts.get(table.type_table, 0) + 1
+            sequence: dict[str, int] = {}
 
-            for table in detected_tables:
-                logger.debug(
-                    "Parsing table '%s' (type=%s) in %s",
-                    table.table_name,
-                    table.type_table,
-                    path.name,
-                )
-                dataframe = parse_table_lines(table.lines)
-
-                if dataframe.empty:
-                    logger.warning(
-                        "Empty dataframe for table '%s' in %s",
-                        table.table_name,
-                        path.name,
-                    )
+            for table in tables:
+                raw = parse_table_lines(table.lines)
+                if raw.empty:
                     errors.append({
-                        "source_file": str(path),
-                        "table_type": table.type_table,
+                        "source_file": str(path), "table_type": table.type_table,
+                        "table_name": table.table_name,
+                        "reason_code": "no_valid_item_code_rows",
                         "errors": [
-                            f"Không parse được bảng {table.table_name}"
+                            "Không có dòng structured hợp lệ: bảng không có cột "
+                            "Mã số/item_code hoặc header OCR không đủ tin cậy"
                         ],
                     })
                     continue
-
-                logger.debug(
-                    "Enriching table '%s' (input rows=%d)",
-                    table.table_name,
-                    len(dataframe),
+                frame = enrich_and_normalize_table(
+                    raw, "\n".join(table.context_lines + table.lines), metadata, table,
                 )
-                dataframe = enrich_and_normalize_table(
-                    dataframe=dataframe,
-                    document_text="\n".join(table.lines),
-                    metadata=metadata,
-                    detected_table=table,
-                )
-
                 validation_errors = validate_table(
-                    dataframe,
-                    minimum_table_rows=parser_config["minimum_table_rows"],
-                    maximum_null_ratio=parser_config["maximum_null_ratio"],
+                    frame,
+                    minimum_table_rows=int(parser_config.get("minimum_table_rows", 3)),
+                    maximum_null_ratio=float(parser_config.get("maximum_null_ratio", 0.7)),
                 )
-
                 if validation_errors:
-                    logger.warning(
-                        "Validation errors for table '%s' in %s: %s",
-                        table.type_table,
-                        path.name,
-                        validation_errors,
-                    )
                     errors.append({
-                        "source_file": str(path),
-                        "table_type": table.type_table,
-                        "errors": validation_errors,
+                        "source_file": str(path), "table_type": table.type_table,
+                        "table_name": table.table_name, "errors": validation_errors,
                     })
-
+                    continue
+                sequence[table.type_table] = sequence.get(table.type_table, 0) + 1
+                table_id = sequence[table.type_table] if counts[table.type_table] > 1 else None
                 save_parsed_table(
-                    df=dataframe,
-                    output_dir=output_dir / "tables",
-                    ticker=metadata["sticker"],
-                    year=metadata["year"],
-                    table_type=table.type_table,
-                    table_id=table.start_line,
+                    frame, output_dir / "tables", metadata["sticker"], metadata["year"],
+                    table.type_table, metadata["report_type"], table_id,
                 )
-                logger.debug("Saved parsed table for %s", metadata["sticker"])
+                statement_count += 1
+                collect_dictionary_features(frame, dictionary_stats)
+                all_records.extend(json_safe_record(row) for row in frame.to_dict("records"))
+                all_documents.extend(build_retrieval_documents(frame, table))
 
-                if not validation_errors:
-                    collect_dictionary_features(
-                        dataframe,
-                        dictionary_stats,
-                    )
-
-                records = [
-                    json_safe_record(record)
-                    for record in dataframe.to_dict(orient="records")
-                ]
-                all_records.extend(records)
-
-                documents = build_retrieval_documents(
-                    dataframe=dataframe,
-                    detected_table=table,
+            if notes_config.get("enabled", True):
+                notes = build_notes_chunks(
+                    lines, tables, metadata,
+                    max_chars=int(notes_config.get("max_chars", 3000)),
+                    overlap_chars=int(notes_config.get("overlap_chars", 300)),
+                    min_chars=int(notes_config.get("min_chars", 100)),
                 )
-                all_documents.extend(documents)
-                logger.debug(
-                    "Added %d records and %d documents for table %s",
-                    len(records),
-                    len(documents),
-                    table.type_table,
-                )
-
+                if not notes.empty:
+                    notes_dir = output_dir / notes_config.get("output_dir", "notes")
+                    save_notes_chunks(notes, notes_dir, metadata)
+                    notes_chunk_count += len(notes)
+                    all_documents.extend(build_notes_retrieval_documents(notes))
+            logger.info(
+                "Processed file: %s | statements=%d | records=%d | documents=%d | errors=%d",
+                path,
+                len(tables),
+                len(all_records) - file_record_start,
+                len(all_documents) - file_document_start,
+                len(errors) - file_error_start,
+            )
         except Exception as error:
-            logger.error("Error processing file %s: %s", path, error, exc_info=True)
+            logger.exception("Error processing %s", path)
             errors.append({
-                "source_file": str(path),
-                "error": str(error),
+                "source_file": str(path), "error": str(error),
                 "traceback": traceback.format_exc(),
             })
+            logger.info(
+                "Processed file with exception: %s | records=%d | documents=%d | errors=%d",
+                path,
+                len(all_records) - file_record_start,
+                len(all_documents) - file_document_start,
+                len(errors) - file_error_start,
+            )
 
-    dictionaries_config = config.get("dictionaries", {})
-    dictionary_root = resolve_project_path(
-        dictionaries_config.get("root_dir", "data/dictionaries")
+    dictionaries = config.get("dictionaries", {})
+    dictionary_root = (
+        resolve_project_path(dictionaries["root_dir"])
+        if dictionaries.get("root_dir")
+        else output_dir / "dictionaries"
     )
-    dictionary_root.mkdir(parents=True, exist_ok=True)
-
-    dictionary_config = config.get("dictionary_builder", {})
-    if dictionary_config.get("enabled", True):
-        logger.info("Building dataset dictionaries...")
+    builder = config.get("dictionary_builder", {})
+    if builder.get("enabled", True):
         try:
-            min_count = int(dictionary_config.get("min_count", 5))
-            dictionary_output_dir = resolve_project_path(
-                dictionary_config.get("output_dir", str(dictionary_root))
-            )
-            dictionary_output_dir.mkdir(parents=True, exist_ok=True)
-
-            indicator_aliases = build_indicator_aliases_from_stats(
-                dictionary_stats,
-                min_count=min_count,
-            )
-            schema_mapping = build_schema_mapping_from_stats(
-                dictionary_stats,
-                min_count=min_count,
-            )
-            dictionary_report = build_dictionary_report(dictionary_stats)
-
-            save_json(
-                indicator_aliases,
-                dictionary_output_dir / dictionary_config.get(
-                    "indicator_aliases_file",
-                    "indicator_aliases.json",
-                ),
-            )
-            save_json(
-                schema_mapping,
-                dictionary_output_dir / dictionary_config.get(
-                    "schema_mapping_file",
-                    "schema_mapping.json",
-                ),
-            )
-            save_json(
-                dictionary_report,
-                output_dir / dictionary_config.get(
-                    "report_file",
-                    "dictionary_report.json",
-                ),
-            )
-            logger.info("Dataset dictionaries built successfully.")
+            min_count = int(builder.get("min_count", 5))
+            generated_dir = resolve_project_path(builder["output_dir"]) if builder.get("output_dir") else output_dir
+            aliases = build_indicator_aliases_from_stats(dictionary_stats, min_count)
+            curated_path = dictionary_root / dictionaries.get("indicator_aliases", "indicator_aliases.json")
+            if curated_path.exists():
+                curated = json.loads(curated_path.read_text(encoding="utf-8"))
+                if isinstance(curated, dict):
+                    aliases.update(curated)
+            save_json(aliases, generated_dir / builder.get("indicator_aliases_file", "indicator_aliases.json"))
+            save_json(build_schema_mapping_from_stats(dictionary_stats, min_count), generated_dir / builder.get("schema_mapping_file", "schema_mapping.json"))
+            save_json(build_dictionary_report(dictionary_stats), output_dir / builder.get("report_file", "dictionary_report.json"))
         except Exception as error:
-            logger.error("Error building dataset dictionaries: %s", error, exc_info=True)
-            errors.append({
-                "stage": "dictionary_builder",
-                "error": str(error),
-                "traceback": traceback.format_exc(),
-            })
+            logger.exception("Dictionary build failed")
+            errors.append({"stage": "dictionary_builder", "error": str(error), "traceback": traceback.format_exc()})
 
-    entity_config = config.get("entity_dictionary", {})
-    if entity_config.get("rebuild", False):
-        logger.info("Rebuilding entity dictionary...")
+    entity = config.get("entity_dictionary", {})
+    if entity.get("rebuild", False):
         try:
-            entity_output_path = resolve_project_path(
-                entity_config.get(
-                    "output_path",
-                    str(dictionary_root / "entity_dictionary.json"),
-                )
-            )
-            questions_path = resolve_project_path(
-                entity_config.get(
-                    "questions_file",
-                    "data/questions/questions.jsonl",
-                )
-            )
-            parquet_dir = output_dir / "tables"
-
+            if entity.get("output_path"):
+                entity_output = resolve_project_path(entity["output_path"])
+            else:
+                entity_output = dictionary_root / entity.get("output_file", "entity_dictionary.json")
+            logger.info("Writing entity dictionary to: %s", entity_output)
             build_entity_dictionary(
-                csv_path=resolve_project_path(
-                    entity_config.get("source_csv", "data/code_stock.csv")
-                ),
-                output_path=entity_output_path,
-                questions_path=questions_path,
-                parquet_dir=parquet_dir,
+                resolve_project_path(entity.get("source_csv", "data/code_stock.csv")),
+                entity_output,
+                questions_path=resolve_project_path(entity.get("questions_file", "data/questions/questions.jsonl")),
+                structured_dir=output_dir / "tables",
             )
-            logger.info("Entity dictionary built successfully.")
         except Exception as error:
-            logger.error("Error building entity dictionary: %s", error, exc_info=True)
-            errors.append({
-                "stage": "entity_dictionary",
-                "error": str(error),
-                "traceback": traceback.format_exc(),
-            })
+            logger.exception("Entity dictionary build failed")
+            errors.append({"stage": "entity_dictionary", "error": str(error), "traceback": traceback.format_exc()})
 
-    indexing_config = config.get("indexing", {})
-    if indexing_config.get("enabled", False):
-        logger.info("Building search indexes stage...")
+    indexing = config.get("indexing", {})
+    if indexing.get("enabled", False):
         try:
-            index_output_dir = output_dir / indexing_config.get("output_dir", "indexes")
             build_search_indexes(
-                documents=all_documents,
-                output_dir=index_output_dir,
-                indexing_config=indexing_config,
-                embedding_config=config.get("embedding", {}),
+                all_documents, output_dir / indexing.get("output_dir", "indexes"),
+                indexing, config.get("embedding", {}),
             )
-            logger.info("Search indexing stage completed.")
         except Exception as error:
-            logger.error("Error in indexing stage: %s", error, exc_info=True)
-            errors.append({
-                "stage": "indexing",
-                "error": str(error),
-                "traceback": traceback.format_exc(),
-            })
-            if indexing_config.get("fail_on_error", False):
+            logger.exception("Indexing failed")
+            errors.append({"stage": "indexing", "error": str(error), "traceback": traceback.format_exc()})
+            if indexing.get("fail_on_error", False):
                 raise
 
-    logger.info("Writing output jsonl files...")
-    write_jsonl(
-        output_dir / "records.jsonl",
-        all_records,
-    )
-
-    write_jsonl(
-        output_dir / "retrieval_documents.jsonl",
-        all_documents,
-    )
-
-    write_jsonl(
-        output_dir / "ingestion_errors.jsonl",
-        errors,
-    )
-
-    summary = {
-        "file_count": len(files),
-        "record_count": len(all_records),
-        "document_count": len(all_documents),
-        "error_count": len(errors),
+    write_jsonl(output_dir / "records.jsonl", all_records)
+    write_jsonl(output_dir / "retrieval_documents.jsonl", all_documents)
+    write_jsonl(output_dir / "ingestion_errors.jsonl", errors)
+    return {
+        "file_count": len(files), "record_count": len(all_records),
+        "document_count": len(all_documents), "error_count": len(errors),
     }
-    logger.info("Ingestion pipeline completed. Summary: %s", summary)
-
-    return summary
