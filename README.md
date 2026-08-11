@@ -12,14 +12,11 @@ code_stock.csv
     └─> Entity Dictionary (ticker, tên công ty, alias rút gọn)
 
 financial_statements/**/*_extracted.txt
-    └─> Phát hiện bảng BS / IS / CF / EQ
-        └─> Parse bảng HTML hoặc text
-            └─> Chuẩn hóa tên chỉ tiêu, kỳ và giá trị VND
-                ├─> tables/*.parquet
-                ├─> records.jsonl
-                ├─> retrieval_documents.jsonl
-                ├─> BM25 index
-                └─> Embedding + FAISS (tùy chọn)
+    ├─> Phát hiện bảng BS / IS / CF / EQ
+    │   └─> Parse strict, chuẩn hóa, validate ─> tables/*.csv
+    └─> Loại primary table, nhận diện section notes
+        └─> Chunk theo section ─> notes/*_notes.csv
+            └─> records/retrieval documents + BM25/FAISS
 
 Câu hỏi tiếng Việt
     └─> Chuẩn hóa Unicode, viết tắt, typo và năm tương đối
@@ -90,10 +87,10 @@ Kết quả kiểm chứng hiện tại cho báo cáo này:
   "ROE cua AAA nam 2025"
 ```
 
-CLI tự tìm các artifact liên quan tại:
+CLI tự tìm các artifact liên quan tại output và `data/dictionaries`:
 
 ```text
-/tmp/r2ai-aaa-2025/entity_dictionary.json
+data/dictionaries/entity_dictionary.json
 /tmp/r2ai-aaa-2025/indexes/bm25.pkl
 /tmp/r2ai-aaa-2025/indexes/faiss/index.faiss  # nếu đã bật dense
 ```
@@ -114,7 +111,7 @@ BS.400 → Vốn chủ sở hữu
 ### 3. Chạy ingestion toàn bộ dữ liệu
 
 ```bash
-.venv/bin/python -m src.pipeline --config configs/config.yaml
+uv run -m src.pipeline --config configs/config.yaml
 ```
 
 Theo cấu hình mặc định, đầu vào là `data/financial_statements` và đầu ra là
@@ -144,16 +141,24 @@ Có thể ghi đè tham số retrieval:
 
 ```text
 data/parsed_tables/
-├── tables/                       # Các bảng Parquet, không ghi đè giữa các trang
+├── tables/                       # BS/IS/CF/EQ dạng CSV UTF-8 BOM
+├── notes/                        # Notes/disclosures chunk theo section dạng CSV
 ├── indexes/
 │   ├── bm25.pkl                 # Sparse index, bật mặc định
 │   └── faiss/
 │       ├── index.faiss          # Dense index khi dense_enabled=true
 │       └── documents.json
-├── entity_dictionary.json       # Sinh từ code_stock.csv
 ├── records.jsonl                # Các bản ghi đã chuẩn hóa
 ├── retrieval_documents.jsonl    # Document dùng cho retrieval
-└── ingestion_errors.jsonl       # Lỗi và cảnh báo validation
+├── ingestion_errors.jsonl       # Lỗi và cảnh báo validation
+└── dictionary_report.json
+
+data/dictionaries/
+├── entity_dictionary.json
+├── indicator_aliases.json
+├── schema_mapping.json
+├── abbreviations.json
+└── formula_library.json
 ```
 
 `error_count` có thể bao gồm cảnh báo validation và không luôn đồng nghĩa với
@@ -168,6 +173,8 @@ Các section chính:
 | Section | Chức năng |
 |---|---|
 | `parser` | Ngưỡng kiểm tra bảng |
+| `notes` | Bật/tắt notes, thư mục và kích thước chunk |
+| `dictionaries` | Thư mục dictionary dùng chung |
 | `entity_dictionary` | Nguồn CSV và việc rebuild dictionary |
 | `indexing` | Bật/tắt BM25, dense index và thư mục artifact |
 | `embedding` | Model, batch size và normalization |

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class DetectedTable:
@@ -7,3 +7,5 @@ class DetectedTable:
     start_line: int
     end_line: int
     lines: list[str]
+    # Nearby heading/unit text is available for metadata detection but is never parsed as rows.
+    context_lines: list[str] = field(default_factory=list)

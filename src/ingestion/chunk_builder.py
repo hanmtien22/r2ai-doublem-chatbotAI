@@ -10,6 +10,8 @@ from .processing import (
     normalize_to_vnd,
     parse_number
 )
+# Backward-compatible imports retained for callers of the original ingestion API.
+from ..indexing.bm25 import bm25_search, build_bm25_index, load_documents
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ def enrich_and_normalize_table(
     unit, multiplier = detect_unit(document_text)
     ticker = metadata["sticker"]
     report_year = metadata["year"]
+    report_type = metadata["report_type"]
     records = []
 
     period_columns = (
@@ -41,6 +44,8 @@ def enrich_and_normalize_table(
     for row in dataframe.to_dict(orient="records"):
         for value_column, period in period_columns:
             raw_value = row.get(value_column)
+            if raw_value is None or pd.isna(raw_value):
+                continue
             value = normalize_to_vnd(parse_number(raw_value), multiplier)
 
             records.append({
@@ -52,15 +57,13 @@ def enrich_and_normalize_table(
                 "value_raw": raw_value,
                 "value": value,
                 "unit": unit,
-                "unit_multiplier": multiplier,
                 "period": period,
                 "ticker": ticker,
                 "year": report_year,
+                "report_type": report_type,
                 "table_type": detected_table.type_table,
-                "section": TABLE_TYPE_TO_SECTION[detected_table.type_table],
                 "table_name": detected_table.table_name,
-                "source_file": metadata["source_file"],
-                "source_path": metadata["source_path"],
+                "note_reference": row.get("note_reference"),
             })
 
     logger.info(
@@ -97,6 +100,8 @@ def build_retrieval_documents(
 
     for index, raw_row in enumerate(dataframe.to_dict(orient="records")):
         row = json_safe_record(raw_row)
+        metadata = dict(row)
+        metadata["section"] = TABLE_TYPE_TO_SECTION[detected_table.type_table]
         chunk_id = (
             f"{row['ticker']}:{row['year']}:{detected_table.type_table}:"
             f"{detected_table.start_line}:{index}"
@@ -110,7 +115,7 @@ def build_retrieval_documents(
                 f"{detected_table.table_name} - "
                 f"{row['item_name_raw']}: {value_text}"
             ),
-            "metadata": row,
+            "metadata": metadata,
         })
 
     logger.info(

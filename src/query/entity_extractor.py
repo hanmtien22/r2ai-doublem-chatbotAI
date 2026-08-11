@@ -35,7 +35,7 @@ class EntityExtractor:
         self._alias_to_ticker: dict[str, str] = {}
         self._all_indicator_names: list[dict] = []
 
-        base = Path(__file__).resolve().parents[2] / "data"
+        base = Path(__file__).resolve().parents[2] / "data" / "dictionaries"
         self._load_entity_dict(entity_dict_path or str(base / "entity_dictionary.json"))
         self._load_indicator_aliases(indicator_aliases_path or str(base / "indicator_aliases.json"))
         self._load_schema_mapping(schema_mapping_path or str(base / "schema_mapping.json"))

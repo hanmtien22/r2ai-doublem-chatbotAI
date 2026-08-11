@@ -7,8 +7,8 @@ import json
 import pickle
 
 from src.ingestion.chunk_builder import load_documents
-from src.ingestion.embedding import dense_search
-from src.ingestion.hybrid_search import reciprocal_rank_fusion
+from src.indexing.embedding import dense_search
+from src.indexing.hybrid_search import reciprocal_rank_fusion
 from src.ingestion.processing import TABLE_TYPE_TO_SECTION
 from src.utils.text import remove_diacritics
 from src.query.models import QueryResult, RetrievalQuery
@@ -188,7 +188,10 @@ class HybridDocumentRetriever(DocumentRetriever):
     def _valid_document(document: dict) -> bool:
         """Kiểm tra xem document tìm được có đủ metadata tối thiểu để trả lời không."""
         metadata = document.get("metadata", {})
-        required = {"ticker", "period", "section", "item_code", "value", "source_file"}
+        if metadata.get("document_type") == "notes":
+            required = {"ticker", "year", "report_type", "section_id", "chunk_index"}
+            return bool(document.get("chunk_id") and document.get("text")) and required.issubset(metadata)
+        required = {"ticker", "period", "section", "item_code", "value"}
         return bool(document.get("chunk_id")) and required.issubset(metadata)
 
     @staticmethod

@@ -54,10 +54,26 @@ def main() -> int:
     retrieval_config = config.get("retrieval", {})
     embedding_config = config.get("embedding", {})
     defaults = config.get("defaults", {})
+    dictionaries_config = config.get("dictionaries", {})
     reference_year = args.reference_year or defaults.get("reference_year", 2024)
-    entity_dictionary_path = args.documents.parent / "entity_dictionary.json"
-    if not entity_dictionary_path.exists():
-        entity_dictionary_path = PROJECT_ROOT / "data" / "entity_dictionary.json"
+    dictionary_root = PROJECT_ROOT / dictionaries_config.get(
+        "root_dir", "data/dictionaries"
+    )
+
+    def dictionary_path(config_key: str, default_name: str) -> Path:
+        filename = dictionaries_config.get(config_key, default_name)
+        dataset_path = args.documents.parent / filename
+        return dataset_path if dataset_path.exists() else dictionary_root / filename
+
+    entity_dictionary_path = dictionary_path(
+        "entity_dictionary", "entity_dictionary.json"
+    )
+    indicator_aliases_path = dictionary_path(
+        "indicator_aliases", "indicator_aliases.json"
+    )
+    schema_mapping_path = dictionary_path(
+        "schema_mapping", "schema_mapping.json"
+    )
 
     llm_client = None
     if llm_config.get("enabled", False):
@@ -77,6 +93,8 @@ def main() -> int:
         embedding_config=embedding_config,
         query_pipeline=QueryPipeline(
             entity_dict_path=str(entity_dictionary_path),
+            indicator_aliases_path=str(indicator_aliases_path),
+            schema_mapping_path=str(schema_mapping_path),
             reference_year=reference_year,
             company_threshold=fuzzy_config.get("company_threshold", 85),
             indicator_threshold=fuzzy_config.get("indicator_threshold", 80),
