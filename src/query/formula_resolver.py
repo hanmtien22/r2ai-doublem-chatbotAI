@@ -10,7 +10,6 @@ from src.utils.text import remove_diacritics
 
 logger = logging.getLogger(__name__)
 
-# Bảng ánh xạ từ các từ khóa người dùng hay hỏi sang Mã Công Thức (formula_key)
 _FORMULA_KEYWORD_MAP = {
     "ROE": "ROE",
     "roe": "ROE",
@@ -45,19 +44,27 @@ _FORMULA_KEYWORD_MAP = {
     "inventory turnover": "inventory_turnover",
 }
 
+# Pre-compute keywords để tránh tính toán lại mỗi khi detect
+_PRECOMPUTED_KEYWORDS = sorted(
+    [
+        (
+            kw.lower(),
+            remove_diacritics(kw.lower()),
+            formula_key
+        )
+        for kw, formula_key in _FORMULA_KEYWORD_MAP.items()
+    ],
+    key=lambda x: len(x[0]),
+    reverse=True
+)
+
 
 class FormulaResolver:
-    """
-    Xử lý các câu hỏi yêu cầu phải tính toán (Derived Indicators).
-    Ví dụ: Biên lợi nhuận, ROE, Tăng trưởng... Các chỉ tiêu này không có sẵn 
-    trong báo cáo mà phải lấy các chỉ tiêu thành phần ra để chia cho nhau.
-    """
     def __init__(self, formula_library_path: Optional[str] = None):
         self._formulas: dict = {}
         self._load_formulas(formula_library_path)
-
+    # Load formula library tu file JSON, neu khong co duong dan thi load tu duong dan mac dinh
     def _load_formulas(self, path: Optional[str]) -> None:
-        """Load thư viện chứa các công thức toán học (VD: ROE = Lợi nhuận sau thuế / Vốn chủ sở hữu)."""
         if path is None:
             path = str(Path(__file__).resolve().parents[2] / "data" / "formula_library.json")
         try:
@@ -66,71 +73,110 @@ class FormulaResolver:
             logger.info("Loaded %d formulas", len(self._formulas))
         except FileNotFoundError:
             logger.warning("Formula library not found: %s", path)
-
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON format in formula library: %s", path)
+    # Detect formula key tu cau hoi, tra ve formula key neu tim thay, nguoc lai tra ve None
     def detect_formula(self, question: str) -> Optional[str]:
-        """
-        Quét câu hỏi xem có chứa từ khóa yêu cầu tính toán không.
-        Trả về Mã công thức (formula_key) nếu tìm thấy.
-        """
         q_lower = question.lower()
         q_no_dia = remove_diacritics(q_lower)
 
-        # Sắp xếp keyword từ dài đến ngắn để ưu tiên bắt các cụm từ dài chính xác
-        for keyword, formula_key in sorted(_FORMULA_KEYWORD_MAP.items(), key=lambda x: len(x[0]), reverse=True):
-            kw_lower = keyword.lower()
-            kw_no_dia = remove_diacritics(kw_lower)
+        # Sử dụng danh sách pre-computed (Chỉ duyệt O(N), không gọi hàm xử lý chuỗi lặp lại)
+        for kw_lower, kw_no_dia, formula_key in _PRECOMPUTED_KEYWORDS:
             if kw_lower in q_lower or kw_no_dia in q_no_dia:
                 if formula_key in self._formulas:
                     return formula_key
 
         return None
-
+    # Giai quyet formula key thanh FormulaInfo va danh sach RetrievalQuery
     def resolve(
         self,
         formula_key: str,
         tickers: list[str],
         years: list[int],
-    ) -> tuple[FormulaInfo, list[RetrievalQuery]]:
-        """
-        Dựa vào Mã công thức, sinh ra các truy vấn con (Retrieval Queries) 
-        để đi lấy số liệu thành phần từ Database.
-        """
+    ) -> tuple[Optional[FormulaInfo], list[RetrievalQuery]]:
+        # Chống lỗi KeyError nếu formula_key không tồn tại
+        if formula_key not in self._formulas:
+            logger.error("Formula key '%s' not found in library", formula_key)
+            return None, []
+
         formula_data = self._formulas[formula_key]
 
-        # Lấy thông tin về công thức
         formula_info = FormulaInfo(
-            name=formula_data.get("name_en", formula_key),
+            name = formula_data.get("name", formula_key),
+            name_en =formula_data.get("name_en", formula_key),
             formula=formula_data["formula"],
             components=formula_data["components"],
             unit=formula_data["unit"],
             multiply_100=formula_data.get("multiply_100", False),
             requires_previous_year=formula_data.get("requires_previous_year", False),
         )
-
-        queries: list[RetrievalQuery] = []
+ 
         all_years = set(years)
-
-        # Nếu công thức (như Tăng trưởng) yêu cầu so với năm ngoái, tự động thêm năm ngoái vào list
         if formula_info.requires_previous_year:
             for y in years:
                 all_years.add(y - 1)
 
-        # Sinh ra tổ hợp truy vấn: [Mã CP] x [Năm] x [Các chỉ tiêu thành phần]
-        for ticker in tickers:
+        # Loại bỏ trùng lặp bằng set
+        queries_set = set()
+        for ticker in set(tickers):
             for year in sorted(all_years):
-                for component in formula_data["components"]:
-                    section, code = component.split(".")
-                    queries.append(RetrievalQuery(
-                        ticker=ticker,
-                        year=year,
-                        section=section,
-                        indicator_code=code,
-                    ))
+                for component in formula_data.get("components", []):
+                    if "." in component:
+                        section, code = component.split(".", 1)
+                        queries_set.add((ticker, year, section, code))
+
+        queries = [
+            RetrievalQuery(ticker=t, year=y, section=s, indicator_code=c)
+            for t, y, s, c in sorted(queries_set)
+        ]
 
         return formula_info, queries
+    def detect_dynamic_formula(self, question: str, extracted_indicators: list[dict]) -> Optional[tuple[FormulaInfo, list[RetrievalQuery]]]:
+        if not extracted_indicators:
+            return None
+            
+        q_lower = question.lower()
+        q_no_dia = remove_diacritics(q_lower)
+        
+        # 1. Ty le A va B (Ratio A/B)
+        ratio_keywords = ["ty le", "tỷ lệ", "chiem bao nhieu", "chiếm bao nhiêu", "ty trong", "tỷ trọng"]
+        has_ratio = any(kw in q_lower or remove_diacritics(kw) in q_no_dia for kw in ratio_keywords)
+        
+        if has_ratio and len(extracted_indicators) >= 2:
+            ind1 = extracted_indicators[0]
+            ind2 = extracted_indicators[1]
+            formula = f"{ind1['indicator_code']} / {ind2['indicator_code']} * 100"
+            return FormulaInfo(
+                name=f"Tỷ lệ {ind1['name']} / {ind2['name']}",
+                name_en="",
+                formula=formula,
+                components=[ind1['indicator_code'], ind2['indicator_code']],
+                unit="%",
+                multiply_100=True,
+                requires_previous_year=False
+            ), []
+            
+        # 2. Tang truong cua A (Growth of A)
+        growth_keywords = ["tang truong", "tăng trưởng", "growth", "thay doi", "thay đổi"]
+        has_growth = any(kw in q_lower or remove_diacritics(kw) in q_no_dia for kw in growth_keywords)
+        
+        if has_growth and len(extracted_indicators) >= 1:
+            ind1 = extracted_indicators[0]
+            formula = f"({ind1['indicator_code']}[t] - {ind1['indicator_code']}[t-1]) / {ind1['indicator_code']}[t-1] * 100"
+            return FormulaInfo(
+                name=f"Tăng trưởng {ind1['name']}",
+                name_en="",
+                formula=formula,
+                components=[ind1['indicator_code']],
+                unit="%",
+                multiply_100=True,
+                requires_previous_year=True
+            ), []
+            
+        return None
 
+    # Detect growth indicator từ câu hỏi
     def detect_growth_indicator(self, question: str) -> Optional[str]:
-        """Xử lý riêng biệt trường hợp người dùng hỏi chung chung về chữ 'tăng trưởng'."""
         q_lower = question.lower()
         q_no_dia = remove_diacritics(q_lower)
 
@@ -143,13 +189,11 @@ class FormulaResolver:
         if not has_growth:
             return None
 
-        # Đoán xem muốn tăng trưởng gì (Doanh thu hay Lợi nhuận)
-        if any(kw in q_lower or remove_diacritics(kw) in q_no_dia
-               for kw in ["doanh thu", "revenue"]):
+        # Tranh bi trung voi "Tang truong cua A" (chi phi, ...)
+        if any(kw in q_lower or remove_diacritics(kw) in q_no_dia for kw in ["doanh thu", "revenue"]) and "chi phi" not in q_no_dia:
             return "revenue_growth"
-        if any(kw in q_lower or remove_diacritics(kw) in q_no_dia
-               for kw in ["loi nhuan", "profit", "lợi nhuận"]):
+        if any(kw in q_lower or remove_diacritics(kw) in q_no_dia for kw in ["loi nhuan", "profit", "lợi nhuận"]) and "chi phi" not in q_no_dia:
             return "profit_growth"
 
-        # Mặc định là tăng trưởng doanh thu nếu không nói rõ
-        return "revenue_growth"
+        # Chống lỗi nếu không khớp đúng chỉ số
+        return None

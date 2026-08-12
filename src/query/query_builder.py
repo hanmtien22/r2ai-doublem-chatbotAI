@@ -15,10 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class QueryBuilder:
-    """
-    Công đoạn cuối cùng của Query Pipeline.
-    Nhận dữ liệu thô rời rạc từ các bước trước và đóng gói lại thành Object `QueryResult` hoàn chỉnh.
-    """
     def build(
         self,
         original_question: str,
@@ -28,29 +24,24 @@ class QueryBuilder:
         formula_info: Optional[FormulaInfo],
         retrieval_queries: Optional[list[RetrievalQuery]],
     ) -> QueryResult:
-        # Gói các mảng list thành object ExtractedEntities
         extracted = ExtractedEntities(
             tickers=entities.get("tickers", []),
             years=entities.get("years", []),
             indicators=entities.get("indicators", []),
             indicator_codes=entities.get("indicator_codes", []),
         )
-
-        # Nếu chưa có truy vấn (tức là không phải câu hỏi có công thức), thì tự sinh ra truy vấn thường
+        # Nếu retrieval_queries chưa được cung cấp, xây dựng danh sách truy vấn dựa trên các thực thể đã trích xuất
         if retrieval_queries is None:
             retrieval_queries = self._build_retrieval_queries(entities)
 
-        # Trích xuất các Loại báo cáo (Section) cần tìm để tạo Filter
         sections = list(set(q.section for q in retrieval_queries))
 
-        # Đóng gói bộ lọc metadata để chuẩn bị đưa cho Vector Search / BM25
         metadata_filters = MetadataFilters(
             tickers=extracted.tickers,
             years=extracted.years,
             sections=sections,
         )
 
-        # Gộp tất cả lại thành Kết quả Truy vấn cuối cùng
         result = QueryResult(
             original_question=original_question,
             normalized_question=normalized_question,
@@ -67,7 +58,6 @@ class QueryBuilder:
         return result
 
     def _build_retrieval_queries(self, entities: dict) -> list[RetrievalQuery]:
-        """Tạo ra các truy vấn con bằng cách nhân chéo (Cross Product) Mã x Năm x Chỉ tiêu."""
         queries: list[RetrievalQuery] = []
         tickers = entities.get("tickers", [])
         years = entities.get("years", [])

@@ -10,6 +10,7 @@ from src.utils.text import normalize_unicode, remove_diacritics
 
 logger = logging.getLogger(__name__)
 
+# Can bo sung them
 _TYPO_MAP = {
     "doanh thi": "doanh thu",
     "loi nhuan rong": "loi nhuan sau thue",
@@ -41,7 +42,7 @@ class QueryPreprocessor:
     def __init__(
         self,
         abbreviations_path: Optional[str] = None,
-        reference_year: int = 2024,
+        reference_year: int = 2025,
     ):
         self.reference_year = reference_year
         self._abbreviations: dict[str, str] = {}
@@ -69,14 +70,14 @@ class QueryPreprocessor:
     def extract_year_list(self, question: str) -> list[int]:
         years: list[int] = []
 
-        explicit = re.findall(r"\b(20[0-2]\d)\b", question)
+        explicit = re.findall(r"\b(20\d{2})\b", question)
         years.extend(int(y) for y in explicit)
-
+        # Tìm kiếm các khoảng năm trước khi tìm kiếm các năm riêng lẻ
         range_match = _YEAR_RANGE_PATTERN.search(question)
         if range_match:
             start, end = int(range_match.group(1)), int(range_match.group(2))
             years.extend(range(start, end + 1))
-
+        # Tìm kiếm các năm tương đối (năm ngoái, năm nay, năm trước, năm hiện tại)
         n_match = _N_YEARS_PATTERN.search(question)
         if n_match and not explicit and not range_match:
             n = int(n_match.group(1))
@@ -91,7 +92,9 @@ class QueryPreprocessor:
     def _expand_abbreviations(self, text: str) -> str:
         sorted_abbrs = sorted(self._abbreviations.keys(), key=len, reverse=True)
         for abbr in sorted_abbrs:
-            pattern = re.compile(r"\b" + re.escape(abbr) + r"\b", re.IGNORECASE)
+            if len(abbr) < 2:
+                continue
+            pattern = re.compile(r"(?<![a-zA-ZÀ-ỹ])" + re.escape(abbr) + r"(?![a-zA-ZÀ-ỹ])", re.IGNORECASE)
             if pattern.search(text):
                 text = pattern.sub(self._abbreviations[abbr], text)
         return text
