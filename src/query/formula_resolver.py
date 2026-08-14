@@ -80,9 +80,12 @@ class FormulaResolver:
         q_lower = question.lower()
         q_no_dia = remove_diacritics(q_lower)
 
-        # Sử dụng danh sách pre-computed (Chỉ duyệt O(N), không gọi hàm xử lý chuỗi lặp lại)
         for kw_lower, kw_no_dia, formula_key in _PRECOMPUTED_KEYWORDS:
-            if kw_lower in q_lower or kw_no_dia in q_no_dia:
+            # Dùng regex word boundary để tránh match substring (như "tien" trong "tien va cac khoan tuong duong tien")
+            import re
+            pat1 = r"(?<!\w)" + re.escape(kw_lower) + r"(?!\w)"
+            pat2 = r"(?<!\w)" + re.escape(kw_no_dia) + r"(?!\w)"
+            if re.search(pat1, q_lower) or re.search(pat2, q_no_dia):
                 if formula_key in self._formulas:
                     return formula_key
 
@@ -137,10 +140,15 @@ class FormulaResolver:
             
         q_lower = question.lower()
         q_no_dia = remove_diacritics(q_lower)
+        import re
         
         # 1. Ty le A va B (Ratio A/B)
         ratio_keywords = ["ty le", "tỷ lệ", "chiem bao nhieu", "chiếm bao nhiêu", "ty trong", "tỷ trọng"]
-        has_ratio = any(kw in q_lower or remove_diacritics(kw) in q_no_dia for kw in ratio_keywords)
+        has_ratio = any(
+            re.search(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", q_lower) or
+            re.search(r"(?<!\w)" + re.escape(remove_diacritics(kw)) + r"(?!\w)", q_no_dia)
+            for kw in ratio_keywords
+        )
         
         if has_ratio and len(extracted_indicators) >= 2:
             ind1 = extracted_indicators[0]
@@ -158,7 +166,11 @@ class FormulaResolver:
             
         # 2. Tang truong cua A (Growth of A)
         growth_keywords = ["tang truong", "tăng trưởng", "growth", "thay doi", "thay đổi"]
-        has_growth = any(kw in q_lower or remove_diacritics(kw) in q_no_dia for kw in growth_keywords)
+        has_growth = any(
+            re.search(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", q_lower) or
+            re.search(r"(?<!\w)" + re.escape(remove_diacritics(kw)) + r"(?!\w)", q_no_dia)
+            for kw in growth_keywords
+        )
         
         if has_growth and len(extracted_indicators) >= 1:
             ind1 = extracted_indicators[0]
@@ -181,8 +193,10 @@ class FormulaResolver:
         q_no_dia = remove_diacritics(q_lower)
 
         growth_keywords = ["tang truong", "tăng trưởng", "growth"]
+        import re
         has_growth = any(
-            kw in q_lower or remove_diacritics(kw) in q_no_dia
+            re.search(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", q_lower) or
+            re.search(r"(?<!\w)" + re.escape(remove_diacritics(kw)) + r"(?!\w)", q_no_dia)
             for kw in growth_keywords
         )
 

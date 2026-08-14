@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 def _word_boundary_match(keyword: str, text: str) -> bool:
-    pattern = r"(?<!\w)" + re.escape(keyword) + r"(?!\w)"
-    return bool(re.search(pattern, text))
+    # Dùng regex \b an toàn không match substring
+    clean_kw = keyword.strip()
+    pattern = r"(?<![a-zA-Z0-9À-ỹ])" + re.escape(clean_kw) + r"(?![a-zA-Z0-9À-ỹ])"
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
 _DERIVED_KEYWORDS = [
     "ROE", "ROA", "EPS", "P/E", "P/B", "PER", "PBR",
@@ -24,6 +26,9 @@ _DERIVED_KEYWORDS = [
     "debt to equity", "no tren von", "nợ trên vốn",
     "vong quay", "vòng quay",
     "asset turnover", "inventory turnover",
+    "tong cong", "tổng cộng",
+    "hieu so", "hiệu số",
+    "chiem bao nhieu", "chiếm bao nhiêu", "gap may lan", "gấp mấy lần"
 ]
 
 _COMPARISON_KEYWORDS = [
@@ -80,8 +85,9 @@ class QueryRouter:
     def _is_derived(self, q_lower: str) -> bool:
         q_no_dia = remove_diacritics(q_lower)
         for kw in _DERIVED_KEYWORDS:
-            kw_check = kw.lower()
-            if _word_boundary_match(kw_check, q_lower) or _word_boundary_match(remove_diacritics(kw_check), q_no_dia):
+            kw_lower = kw.lower()
+            kw_no_dia = remove_diacritics(kw_lower)
+            if _word_boundary_match(kw_lower, q_lower) or _word_boundary_match(kw_no_dia, q_no_dia):
                 return True
         return False
 
@@ -134,3 +140,4 @@ class QueryRouter:
             logger.warning("LLM Router failed: %s", e)
 
         return self.classify(entities, question)
+

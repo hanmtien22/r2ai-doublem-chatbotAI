@@ -22,6 +22,7 @@ class FormulaInfo:
     formula: str
     components: list[str]
     unit: str
+    name_en: Optional[str] = None
     multiply_100: bool = False
     requires_previous_year: bool = False
 

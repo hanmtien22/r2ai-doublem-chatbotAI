@@ -25,6 +25,10 @@ __pycache__/
 data/
 logs/
 *.log
+*.pkl
+*.faiss
+*.index
+*.jsonl
 
 .vscode/
 .idea/

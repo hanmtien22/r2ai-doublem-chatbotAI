@@ -125,6 +125,14 @@ class QueryPipeline:
             entities["years"] = year_list
 
         query_type = self.router.classify(entities, normalized)
+        
+        # Nếu chỉ có 1 chỉ tiêu chính xác và 1 công ty 1 năm -> ép về single_lookup
+        if query_type == "derived_indicator" and len(entities.get("tickers", [])) <= 1 and len(entities.get("years", [])) <= 1:
+            # Kiểm tra xem có formula thực sự hay không
+            fk = self.formula_resolver.detect_formula(normalized) or self.formula_resolver.detect_growth_indicator(normalized)
+            if not fk:
+                query_type = "single_lookup"
+                
         logger.info("Step 1.3 Router: %s", query_type)
 
         formula_info = None

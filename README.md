@@ -239,8 +239,142 @@ Kết quả hiện tại:
 ```text
 95 passed
 ```
+## Luồng hoạt động từ Phase1 đến Phase2
 
-Xem trợ giúp CLI:
+```text
+[ Câu hỏi từ User / Batch ]
+          |
+          v
+[ Question Orchestrator ] ---> Quyết định: DỄ hay KHÓ? (Dựa trên Query Router)
+          |
+          +---> [ DỄ (Single Lookup) ]
+          |        |
+          |        +-> Gọi thẳng tới [ EasyHybridSolver ]
+          |               - Lọc chính xác bằng Ticker, Period, Item Code
+          |               - Fallback: Keyword Match hoặc FAISS Vector Search
+          |        +-> Trả kết quả (Value + Evidence)
+          |
+          +---> [ KHÓ (So sánh, Tính toán - LangGraph) ]
+                   |
+                   +-> [ Node Planner ] 
+                   |      Gửi câu hỏi lên OpenRouter / Groq / HuggingFace API
+                   |      sinh ra Bản thiết kế JSON (Execution Plan).
+                   |
+                   +-> [ Node Executor (Vòng lặp) ]
+                   |      - action: fetch_data -> Gọi lại [ EasyHybridSolver ]
+                   |      - action: evaluate   -> Gọi [ PythonEvaluator ] (Toán học)
+                   |
+                   +-> [ Node Formatter ]
+                          Gom kết quả -> Xuất định dạng JSON submit.
+```
+
+## Yêu cầu hệ thống và Cài đặt
+
+Cài đặt thư viện Python (yêu cầu Python 3.10+):
+
+```bash
+uv venv
+uv pip install --python .venv/bin/python -r requirements.txt
+uv pip install simpleeval tqdm huggingface_hub langgraph langchain-core pydantic
+```
+
+*(Lưu ý: Nếu không sử dụng `uv`, bạn có thể dùng `pip install -r requirements.txt` tiêu chuẩn).*
+
+## Chuẩn bị Dữ liệu 
+
+Hệ thống yêu cầu các tệp dữ liệu phải được Ingest đầy đủ từ Phase 0 và đặt đúng vị trí trong thư mục `data/`:
+
+1.  **Thư mục chứa Bảng đã parse (CSV):** `data/tables/*.csv`
+2.  **Bộ Index tìm kiếm (Vector & BM25):**
+    *   `data/indexes/bm25.pkl` (Dành cho Keyword Search)
+    *   `data/indexes/faiss/index.faiss` (Lưu trữ Vector Dense)
+    *   `data/indexes/faiss/documents.json` (Ánh xạ Metadata cho Vector)
+3.  **Tệp câu hỏi:** `data/questions.jsonl`
+
+## Chạy Hệ thống 
+
+Sử dụng script `run_batch.py` để xử lý hàng loạt 10,000 câu hỏi từ tệp `questions.jsonl`.
+Hệ thống có cơ chế **Resume**, nếu bị ngắt giữa chừng (do sập mạng/hết RAM), lần chạy sau sẽ tự động đọc file output và tiếp tục xử lý từ câu bị lỗi.
+
+### Tùy chọn 1: Chạy bằng OpenRouter 
+Đây là cách tốt nhất vì OpenRouter cung cấp các model open-source mạnh mẽ với mức giá rất rẻ hoặc miễn phí.
+```bash
+python scripts/run_batch.py \
+  --input data/questions.jsonl \
+  --output data/submission.jsonl \
+  --endpoint "https://openrouter.ai/api/v1" \
+  --api-key "sk-or-v1-YOUR-KEY" \
+  --model "qwen/qwen-2.5-7b-instruct"
+```
+#### Chạy trên terminal: 
+python scripts/run_batch.py --input data/questions.jsonl --output data/submission.jsonl --endpoint "https://openrouter.ai/api/v1" --api-key "your_api_key" --model "qwen/qwen-2.5-7b-instruct"
+
+### Tùy chọn 2: Chạy bằng Groq 
+```bash
+python scripts/run_batch.py \
+  --input data/questions.jsonl \
+  --output data/submission.jsonl \
+  --endpoint "https://api.groq.com/openai/v1" \
+  --api-key "gsk_YOUR-KEY" \
+  --model "llama-3.1-8b-instant"
+```
+#### Chạy trên terminal: 
+python scripts/run_batch.py --input data/questions.jsonl --output data/submission.jsonl --endpoint "https://api.groq.com/openai/v1" --api-key "gsk_KEY_CỦA_BẠN_Ở_ĐÂY" --model "llama-3.1-8b-instant"
+### Tùy chọn 3: Chạy Local bằng vLLM / Ollama 
+Nếu máy bạn có GPU đủ mạnh (VRAM >= 12GB), bạn có thể tải model về máy qua Ollama và chạy 100% offline, không tốn phí API:
+1. Mở Ollama và chạy model: `ollama run qwen2.5:7b-instruct`
+2. Chạy pipeline chỉ định đến cổng của Ollama (mặc định là 11434):
+```bash
+python scripts/run_batch.py \
+  --input data/questions.jsonl \
+  --output data/submission.jsonl \
+  --endpoint "http://localhost:11434/v1" \
+  --api-key "EMPTY" \
+  --model "qwen2.5:7b-instruct"
+```
+#### Chạy trên terminal: 
+python scripts/run_batch.py --input data/questions.jsonl --output data/submission.jsonl --endpoint "http://localhost:11434/v1" --api-key "EMPTY" --model "qwen2.5:7b-instruct"
+### Các tham số tùy chỉnh:
+*   `--input`: Đường dẫn file câu hỏi (Hỗ trợ `.jsonl` hoặc `.json`).
+*   `--output`: File kết quả (Đúng chuẩn format của Ban tổ chức, trường `pandas_query` để trống `""`).
+*   `--data-dir`: Thư mục gốc chứa dữ liệu `tables` và `indexes` (Mặc định là `data`).
+
+## Cấu trúc Đầu ra (JSONL Format)
+
+Mỗi dòng trong file `submission.jsonl` sẽ có cấu trúc như sau:
+
+```json
+{
+  "id": 16,
+  "question": "Số dư vay ngắn hạn của công ty mẹ CEO cuối năm 2025 là bao nhiêu tỷ đồng?",
+  "answer": 30907778008628,
+  "relevant_docs": [
+    "CEO_2025_consolidated"
+  ],
+  "relevant_tables": [
+    "CEO_2025_consolidated|0"
+  ],
+  "evidence": [
+    {
+      "variable": "df_CEO_2025",
+      "csv_path": "data/tables/CEO_2025_consolidated.csv"
+    }
+  ],
+  "pandas_query": ""
+}
+```
+
+*Ghi chú: Giá trị sau dấu `|` trong `relevant_tables` là vị trí `start_line` trích xuất từ dữ liệu thực tế. Nếu dữ liệu không cung cấp `start_line`, hệ thống mặc định gán là `0`.*
+
+## Kiến trúc Mã Nguồn Mới
+
+*   `src/orchestrator.py`: Điều phối luồng xử lý câu hỏi (Easy -> Hybrid Fetcher, Hard -> LangGraph).
+*   `src/query/hybrid_fetcher.py`: Engine tìm kiếm đa năng. Lọc chính xác bằng Pandas DataFrame + Cứu cánh bằng Text Search (FAISS & BM25) + Trọng tài `rapidfuzz` chống trùng lặp dữ liệu. Tự động tìm trong Text Chunks (Thuyết minh) nếu không có bảng.
+*   `src/query/evaluator.py`: Máy tính toán học độc lập, thực thi các phép toán tài chính thông qua thư viện an toàn `simpleeval`.
+*   `src/graph/executor.py`: Quản lý quy trình Agent (Lập kế hoạch, Vòng lặp lấy số, Tính toán, Trả kết quả).
+*   `src/llm/tgi_client.py`: API Client có hỗ trợ tự động Retry Exponential Backoff khi bị Rate Limit (Lỗi 429). Mặc dù tên là tgi_client, class bên trong `GenericLLMClient` hỗ trợ chuẩn gọi API OpenAI (OpenRouter, Groq, vLLM, Ollama).
+
+### Xem trợ giúp CLI:
 
 ```bash
 .venv/bin/python -m src.pipeline --help
