@@ -224,7 +224,7 @@ llm:
   model_path: null
 ```
 
-Nếu không có `vllm` hoặc `llama_cpp`, `LLMClient` dùng mock backend; các rule
+Nếu không có `ollama` hoặc `llama_cpp`, `LLMClient` dùng mock backend; các rule
 deterministic vẫn là đường phân loại chính.
 
 ## Chạy kiểm thử

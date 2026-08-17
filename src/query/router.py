@@ -127,7 +127,7 @@ class QueryRouter:
         return False
 
     def classify_with_llm(self, entities: dict, question: str) -> str:
-        """Dùng LLM (như GPT hoặc Qwen) để phân loại câu hỏi thay vì quy tắc."""
+        """Dùng LLM (chat API) với tiếng Việt đầy đủ và few-shot examples để phân loại câu hỏi."""
         if not self._llm_client:
             return self.classify(entities, question)
 
@@ -135,28 +135,47 @@ class QueryRouter:
         years = entities.get("years", [])
         indicators = entities.get("indicators", [])
 
-        prompt = (
-            "Ban la mot bo phan loai cau hoi tai chinh. "
-            "Hay phan loai cau hoi sau vao MOT trong 4 loai:\n\n"
-            "1. single_lookup: Tra cuu 1 chi tieu cua 1 cong ty trong 1 nam\n"
-            "2. multi_comparison: So sanh nhieu cong ty hoac nhieu nam\n"
-            "3. derived_indicator: Chi so can tinh toan (ROE, ROA, tang truong, ty le, bien loi nhuan)\n"
-            "4. out_of_scope: Cau hoi khong lien quan den tai chinh\n\n"
-            f"Cau hoi: \"{question}\"\n\n"
-            f"Thuc the da trich xuat:\n"
-            f"- Cong ty: {tickers}\n"
-            f"- Nam: {years}\n"
-            f"- Chi tieu: {indicators}\n\n"
-            "Tra loi CHI bang mot trong 4 gia tri: single_lookup, multi_comparison, derived_indicator, out_of_scope"
+        system_prompt = (
+            "Bạn là bộ phân loại câu hỏi tài chính. "
+            "Phân loại câu hỏi vào MỘT trong 4 loại sau:\n"
+            "- single_lookup: Tra cứu 1 chỉ tiêu của 1 công ty trong 1 năm\n"
+            "- multi_comparison: So sánh nhiều công ty hoặc nhiều năm\n"
+            "- derived_indicator: Chỉ số cần tính toán (ROE, ROA, tăng trưởng, tỷ lệ, biên lợi nhuận)\n"
+            "- out_of_scope: Câu hỏi không liên quan đến tài chính\n\n"
+            "Trả lời CHỈ bằng một trong 4 giá trị: single_lookup, multi_comparison, derived_indicator, out_of_scope"
+        )
+
+        user_prompt = (
+            "Ví dụ phân loại:\n"
+            "Q: \"Doanh thu của VNM năm 2023 là bao nhiêu?\" → single_lookup\n"
+            "Q: \"So sánh lợi nhuận của VNM và HPG năm 2023\" → multi_comparison\n"
+            "Q: \"ROE của VNM năm 2023 là bao nhiêu?\" → derived_indicator\n"
+            "Q: \"Thời tiết hôm nay thế nào?\" → out_of_scope\n\n"
+            f"Câu hỏi cần phân loại: \"{question}\"\n"
+            f"Thực thể đã trích xuất:\n"
+            f"- Công ty: {tickers}\n"
+            f"- Năm: {years}\n"
+            f"- Chỉ tiêu: {indicators}\n\n"
+            "Phân loại:"
         )
 
         try:
-            result = self._llm_client.generate(prompt, max_tokens=20).strip().lower()
+            result = self._llm_client.generate_chat(
+                system_prompt=system_prompt,
+                user_message=user_prompt,
+                max_tokens=30,
+                temperature=0.0,
+            ).strip().lower()
             # Dọn dẹp câu trả lời của LLM (chỉ giữ lại chữ cái và dấu gạch dưới)
             result = re.sub(r"[^a-z_]", "", result)
             if result in QUERY_TYPES:
                 logger.debug("LLM Router: %s", result)
                 return result
+            # Thử tìm query type trong output dài hơn
+            for qt in QUERY_TYPES:
+                if qt in result:
+                    logger.debug("LLM Router (extracted): %s", qt)
+                    return qt
         except Exception as e:
             logger.warning("LLM Router failed: %s", e)
 

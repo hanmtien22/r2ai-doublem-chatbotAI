@@ -49,7 +49,7 @@ class QueryPreprocessor:
 
     def _load_abbreviations(self, path: Optional[str]) -> None:
         if path is None:
-            path = str(Path(__file__).resolve().parents[2] / "data" / "abbreviations.json")
+            path = str(Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "abbreviations.json")
         try:
             with open(path, "r", encoding="utf-8") as f:
                 self._abbreviations = json.load(f)

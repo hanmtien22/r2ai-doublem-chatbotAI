@@ -6,3 +6,4 @@ PyYAML
 rank-bm25
 rapidfuzz
 sentence-transformers
+ollama

@@ -200,11 +200,17 @@ class HybridDocumentRetriever(DocumentRetriever):
         if query is None:
             return True
         metadata = document.get("metadata", {})
-        return (
-            str(metadata.get("ticker", "")).upper() == query.ticker.upper()
-            and int(metadata.get("period", -1)) == int(query.year)
-            and str(metadata.get("section", "")).upper() == query.section.upper()
-        )
+        is_notes = metadata.get("document_type") == "notes"
+
+        ticker_match = str(metadata.get("ticker", "")).upper() == query.ticker.upper()
+        # Notes dùng `year`, structured data dùng `period`
+        doc_year = metadata.get("period", metadata.get("year", -1))
+        year_match = int(doc_year) == int(query.year)
+        # Notes không có `section` → bỏ qua kiểm tra section cho notes
+        doc_section = str(metadata.get("section", "")).upper()
+        section_match = is_notes or doc_section == query.section.upper()
+
+        return ticker_match and year_match and section_match
 
     def _hybrid_search(self, text: str, top_k: int) -> list[dict]:
         """Thực thi tìm kiếm BM25 kết hợp FAISS Vector và dung hợp (fusion) kết quả."""
@@ -291,8 +297,11 @@ class HybridDocumentRetriever(DocumentRetriever):
             if query is not None:
                 metadata = item["document"]["metadata"]
                 metadata_bonus += 0.1 if metadata.get("ticker") == query.ticker else 0.0
-                metadata_bonus += 0.1 if metadata.get("period") == query.year else 0.0
-                metadata_bonus += 0.1 if metadata.get("section") == query.section else 0.0
+                # Hỗ trợ cả period và year cho notes
+                doc_yr = metadata.get("period", metadata.get("year"))
+                metadata_bonus += 0.1 if doc_yr == query.year else 0.0
+                doc_sec = metadata.get("section", "")
+                metadata_bonus += 0.1 if doc_sec == query.section else 0.0
             return min(1.0, lexical_score + metadata_bonus)
 
         return [

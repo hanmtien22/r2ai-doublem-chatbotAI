@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -10,12 +11,12 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     def __init__(
         self,
-        model_name: str = "Qwen2.5-14B-Instruct",
+        model_name: str = "qwen2.5:3b",
         model_path: Optional[str] = None,
-        max_tokens: int = 100,
+        max_tokens: int = 512,
         temperature: float = 0.0,
-        timeout: int = 30,
-        max_retries: int = 2,
+        timeout: int = 60,
+        max_retries: int = 3,
     ):
         self.model_name = model_name
         self.model_path = model_path
@@ -30,10 +31,10 @@ class LLMClient:
             return
         logger.info("Loading LLM engine: %s", self.model_name)
         try:
-            from vllm import LLM, SamplingParams  # noqa: F401
-            self._engine = LLM(model=self.model_path or self.model_name)
-            self._backend = "vllm"
-            logger.info("Loaded vLLM backend")
+            import ollama
+            self._engine = ollama
+            self._backend = "ollama"
+            logger.info("Loaded ollama backend")
         except ImportError:
             try:
                 from llama_cpp import Llama  # noqa: F401
@@ -57,8 +58,8 @@ class LLMClient:
 
         for attempt in range(self.max_retries + 1):
             try:
-                if self._backend == "vllm":
-                    return self._generate_vllm(prompt, _max_tokens, _temperature)
+                if self._backend == "ollama":
+                    return self._generate_ollama(prompt, _max_tokens, _temperature)
                 elif self._backend == "llama_cpp":
                     return self._generate_llama_cpp(prompt, _max_tokens, _temperature)
                 else:
@@ -69,11 +70,50 @@ class LLMClient:
                     raise
         return ""
 
-    def _generate_vllm(self, prompt: str, max_tokens: int, temperature: float) -> str:
-        from vllm import SamplingParams
-        params = SamplingParams(max_tokens=max_tokens, temperature=temperature)
-        outputs = self._engine.generate([prompt], params)
-        return outputs[0].outputs[0].text.strip()
+    def generate_chat(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> str:
+        """Gọi chat API (system/user roles). Fallback về generate() nếu backend không hỗ trợ."""
+        self._load_engine()
+        _max_tokens = max_tokens or self.max_tokens
+        _temperature = temperature if temperature is not None else self.temperature
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                if self._backend == "ollama":
+                    return self._chat_ollama(system_prompt, user_message, _max_tokens, _temperature)
+                else:
+                    combined = f"System: {system_prompt}\n\nUser: {user_message}\n\nAssistant:"
+                    return self.generate(combined, max_tokens=_max_tokens, temperature=_temperature)
+            except Exception as e:
+                logger.warning("LLM chat attempt %d failed: %s", attempt + 1, e)
+                if attempt == self.max_retries:
+                    combined = f"System: {system_prompt}\n\nUser: {user_message}\n\nAssistant:"
+                    return self.generate(combined, max_tokens=_max_tokens, temperature=_temperature)
+        return ""
+
+    def _chat_ollama(self, system_prompt: str, user_message: str, max_tokens: int, temperature: float) -> str:
+        response = self._engine.chat(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            options={"temperature": temperature, "num_predict": max_tokens},
+        )
+        return response["message"]["content"].strip()
+
+    def _generate_ollama(self, prompt: str, max_tokens: int, temperature: float) -> str:
+        response = self._engine.generate(
+            model=self.model_name,
+            prompt=prompt,
+            options={"temperature": temperature, "num_predict": max_tokens},
+        )
+        return response["response"].strip()
 
     def _generate_llama_cpp(self, prompt: str, max_tokens: int, temperature: float) -> str:
         output = self._engine(prompt, max_tokens=max_tokens, temperature=temperature)
@@ -85,24 +125,47 @@ class LLMClient:
 
     def generate_json(self, prompt: str, max_tokens: Optional[int] = None) -> dict[str, Any]:
         raw = self.generate(prompt, max_tokens=max_tokens)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            lines = raw.split("\n")
-            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        return self._parse_json_robust(raw)
+
+    def generate_json_chat(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: Optional[int] = None,
+    ) -> dict[str, Any]:
+        raw = self.generate_chat(system_prompt, user_message, max_tokens=max_tokens)
+        return self._parse_json_robust(raw)
+
+    @staticmethod
+    def _parse_json_robust(raw: str) -> dict[str, Any]:
+        """Parse JSON từ LLM output. Strip markdown fences, fallback extract { } nếu bị bọc trong text."""
+        text = raw.strip()
+
+        if text.startswith("```"):
+            inner_lines = []
+            for line in text.split("\n")[1:]:
+                if line.strip() == "```":
+                    break
+                inner_lines.append(line)
+            text = "\n".join(inner_lines).strip()
+
         try:
-            return json.loads(raw)
+            return json.loads(text)
         except json.JSONDecodeError:
-            logger.warning("Failed to parse LLM JSON output: %s", raw[:200])
-            return {}
+            pass
+
+        for pattern in (r"\{.*\}", r"\[.*\]"):
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+
+        logger.warning("Failed to parse LLM JSON output: %s", raw[:300])
+        return {}
 
     def generate_batch(self, prompts: list[str], max_tokens: Optional[int] = None) -> list[str]:
         self._load_engine()
         _max_tokens = max_tokens or self.max_tokens
-
-        if self._backend == "vllm":
-            from vllm import SamplingParams
-            params = SamplingParams(max_tokens=_max_tokens, temperature=self.temperature)
-            outputs = self._engine.generate(prompts, params)
-            return [o.outputs[0].text.strip() for o in outputs]
-        else:
-            return [self.generate(p, max_tokens=_max_tokens) for p in prompts]
+        return [self.generate(p, max_tokens=_max_tokens) for p in prompts]

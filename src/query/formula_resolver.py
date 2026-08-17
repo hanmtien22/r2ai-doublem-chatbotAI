@@ -59,7 +59,7 @@ class FormulaResolver:
     def _load_formulas(self, path: Optional[str]) -> None:
         """Load thư viện chứa các công thức toán học (VD: ROE = Lợi nhuận sau thuế / Vốn chủ sở hữu)."""
         if path is None:
-            path = str(Path(__file__).resolve().parents[2] / "data" / "formula_library.json")
+            path = str(Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "formula_library.json")
         try:
             with open(path, "r", encoding="utf-8") as f:
                 self._formulas = json.load(f)
