@@ -22,7 +22,7 @@ indexing:
   enabled: true
   output_dir: indexes
   bm25_enabled: true
-  dense_enabled: false
+  dense_enabled: true
   fail_on_error: false
 
 retrieval:
@@ -30,7 +30,7 @@ retrieval:
   reranker_model_name: null
   confidence_threshold: 0.5
   rrf_k: 60
-  top_k: 5
+  top_k: 8
 
 fuzzy_match:
   company_threshold: 85
@@ -42,12 +42,12 @@ router:
 
 llm:
   enabled: false
-  model_name: "Qwen2.5-14B-Instruct"
+  model_name: "qwen2.5:7b"
   model_path: null
-  max_tokens: 100
+  max_tokens: 512
   temperature: 0.0
-  timeout: 30
-  max_retries: 2
+  timeout: 60
+  max_retries: 3
 
 cache:
   enabled: true

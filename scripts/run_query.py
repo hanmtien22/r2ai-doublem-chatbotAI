@@ -78,7 +78,7 @@ def main() -> int:
     llm_client = None
     if llm_config.get("enabled", False):
         llm_client = LLMClient(
-            model_name=llm_config.get("model_name", "Qwen2.5-14B-Instruct"),
+            model_name=llm_config.get("model_name", "qwen2.5:3b"),
             model_path=llm_config.get("model_path"),
             max_tokens=llm_config.get("max_tokens", 100),
             temperature=llm_config.get("temperature", 0.0),
