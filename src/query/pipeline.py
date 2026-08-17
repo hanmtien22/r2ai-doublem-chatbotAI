@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 from src.query.preprocessor import QueryPreprocessor
@@ -9,25 +11,31 @@ from src.query.entity_resolver import EntityResolver
 from src.query.router import QueryRouter
 from src.query.formula_resolver import FormulaResolver
 from src.query.query_builder import QueryBuilder
-from src.query.models import QueryResult
+from src.query.models import QueryResult, RetrievalQuery
 from src.llm.client import LLMClient
 from src.utils.cache import SimpleCache
 
 logger = logging.getLogger(__name__)
 
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.warning("Data file not found: %s", path)
+        return {}
+
 
 class QueryPipeline:
-    """
-    Điều phối viên (Orchestrator) của toàn bộ pha xử lý câu hỏi.
-    Nó kết nối tuần tự tất cả các class trong thư mục `src/query` lại với nhau 
-    để tạo thành một luồng xử lý trôi chảy (Pipeline) từ câu hỏi thô thành dữ liệu truy vấn.
-    """
     def __init__(
         self,
         abbreviations_path: Optional[str] = None,
-        entity_dict_path: Optional[str] = None,
-        indicator_aliases_path: Optional[str] = None,
-        schema_mapping_path: Optional[str] = None,
+        entity_dict: Optional[dict] = None,
+        indicator_aliases: Optional[dict] = None,
+        schema_mapping: Optional[dict] = None,
         formula_library_path: Optional[str] = None,
         reference_year: int = 2024,
         company_threshold: int = 85,
@@ -37,89 +45,102 @@ class QueryPipeline:
         cache_enabled: bool = True,
         cache_max_size: int = 1000,
     ):
-        # 1. Khởi tạo bộ tiền xử lý (sửa lỗi chính tả, dịch năm tương đối)
+        if entity_dict is None:
+            entity_dict = _load_json(_DATA_DIR / "entity_dictionary.json")
+        if indicator_aliases is None:
+            indicator_aliases = _load_json(_DATA_DIR / "indicator_aliases.json")
+        if schema_mapping is None:
+            schema_mapping = _load_json(_DATA_DIR / "schema_mapping.json")
+
         self.preprocessor = QueryPreprocessor(
             abbreviations_path=abbreviations_path,
             reference_year=reference_year,
         )
 
-        # 2. Khởi tạo bộ trích xuất thực thể
         self.entity_extractor = EntityExtractor(
-            entity_dict_path=entity_dict_path,
-            indicator_aliases_path=indicator_aliases_path,
-            schema_mapping_path=schema_mapping_path,
+            entity_dict=entity_dict,
+            indicator_aliases=indicator_aliases,
+            schema_mapping=schema_mapping,
         )
 
-        # 3. Khởi tạo bộ giải quyết thực thể mập mờ (fuzzy match)
         self.entity_resolver = EntityResolver(
             entity_dict=self.entity_extractor.entity_dict,
+            schema_mapping=schema_mapping,
             company_threshold=company_threshold,
             indicator_threshold=indicator_threshold,
             llm_client=llm_client,
         )
 
-        # 4. Khởi tạo bộ định tuyến để xác định loại câu hỏi
         self.router = QueryRouter(
             llm_client=llm_client,
             use_llm_fallback=use_llm_fallback,
         )
 
-        # 5. Khởi tạo bộ giải quyết công thức (nếu cần tính toán)
         self.formula_resolver = FormulaResolver(
             formula_library_path=formula_library_path,
         )
 
-        # 6. Khởi tạo bộ đóng gói cuối cùng
         self.query_builder = QueryBuilder()
 
-        # 7. Khởi tạo bộ nhớ tạm (Cache) để trả lời nhanh các câu hỏi trùng lặp
         self._cache = SimpleCache(max_size=cache_max_size, enabled=cache_enabled)
 
         logger.info("QueryPipeline initialized")
 
     def process(self, question: str) -> QueryResult:
-        """
-        Hàm chính chạy toàn bộ luồng xử lý:
-        1. Check Cache -> 2. Normalize -> 3. Extract -> 4. Route -> 5. Resolve Formula -> 6. Build
-        """
-        # Kiểm tra cache xem câu này đã ai hỏi chưa
         cached = self._cache.get(question)
         if cached is not None:
             logger.debug("Cache hit for question: '%s'", question[:50])
             return cached
 
-        # Bước 1: Tiền xử lý
         normalized = self.preprocessor.normalize(question)
         logger.info("Step 1.1 Preprocessor: '%s'", normalized[:80])
 
-        # Bước 2: Trích xuất thực thể
         entities = self.entity_extractor.extract_all(normalized)
-        
-        # Bước 2.5: Cố gắng tra cứu các công ty bị gõ sai chính tả bằng fuzzy match
-        fuzzy_tickers = self.entity_resolver.resolve_companies_in_text(normalized)
-        for ticker in fuzzy_tickers:
-            if ticker not in entities["tickers"]:
-                entities["tickers"].append(ticker)
         logger.info("Step 1.2 Entities: tickers=%s, years=%s, indicators=%s",
                      entities["tickers"], entities["years"], entities["indicators"])
+        
+        # Nếu indicators trả về là NOTES.UNKNOWN, sử dụng TF-IDF fallback ĐỂ CHECK TRƯỚC. 
+        # Nếu điểm cao (>0.6) thì ghi đè, nếu không thì giữ nguyên NOTES.UNKNOWN để Semantic Search lo
+        if entities["indicators"] and entities["indicator_codes"][0] == "NOTES.UNKNOWN" and self.router._use_llm_fallback:
+            logger.info("Step 1.2b: Indicator is UNKNOWN, triggering TF-IDF fallback...")
+            entities_to_remove = entities["tickers"] + [str(y) for y in entities["years"]]
+            fallback_ind = self.entity_resolver.resolve_indicator_fallback(normalized, entities_to_remove)
+            
+            # TF-IDF return None nếu score <= 0.15. Ta có thể nâng ngưỡng tin cậy (VD: > 0.4)
+            if fallback_ind: # Giả sử resolve_indicator_fallback đã xử lý ngưỡng
+                entities["indicators"] = [fallback_ind["name"]]
+                entities["indicator_codes"] = [f"{fallback_ind['section']}.{fallback_ind['code']}"]
+                entities["indicator_details"] = [{
+                    "name": fallback_ind["name"],
+                    "section": fallback_ind["section"],
+                    "code": fallback_ind["code"],
+                    "indicator_code": f"{fallback_ind['section']}.{fallback_ind['code']}"
+                }]
+                logger.info("Step 1.2b Fallback Success: found %s", fallback_ind["name"])
+            else:
+                logger.info("Step 1.2b Fallback Low Score -> Keep NOTES.UNKNOWN for Phase 2 Semantic Search")
 
-        # Bước 2.6: Cập nhật lại năm một lần nữa đề phòng sót
         year_list = self.preprocessor.extract_year_list(question)
         if year_list:
             entities["years"] = year_list
 
-        # Bước 3: Phân loại câu hỏi
-        query_type = self.router.route(entities, normalized)
+        query_type = self.router.classify(entities, normalized)
+        
+        # Nếu chỉ có 1 chỉ tiêu chính xác và 1 công ty 1 năm -> ép về single_lookup
+        if query_type == "derived_indicator" and len(entities.get("tickers", [])) <= 1 and len(entities.get("years", [])) <= 1:
+            # Kiểm tra xem có formula thực sự hay không
+            fk = self.formula_resolver.detect_formula(normalized) or self.formula_resolver.detect_growth_indicator(normalized)
+            if not fk:
+                query_type = "single_lookup"
+                
         logger.info("Step 1.3 Router: %s", query_type)
 
         formula_info = None
         retrieval_queries = None
 
-        # Bước 4: Xử lý riêng cho câu hỏi dạng công thức
         if query_type == "derived_indicator":
             formula_key = self.formula_resolver.detect_formula(normalized)
             if formula_key is None:
-                # Nếu không bắt được tên công thức cụ thể, thử bắt chữ "tăng trưởng"
                 formula_key = self.formula_resolver.detect_growth_indicator(normalized)
 
             if formula_key:
@@ -130,8 +151,29 @@ class QueryPipeline:
                 )
                 logger.info("Step 1.4 Formula: %s -> %d queries",
                              formula_key, len(retrieval_queries))
+            else:
+                # Dynamic formula detection (Ty le, tang truong khong co trong library)
+                dynamic_res = self.formula_resolver.detect_dynamic_formula(normalized, entities.get("indicator_details", []))
+                if dynamic_res:
+                    formula_info, _ = dynamic_res
+                    # Tao retrieval_queries tu dong
+                    retrieval_queries = []
+                    all_years = set(entities["years"])
+                    if formula_info.requires_previous_year:
+                        for y in entities["years"]:
+                            all_years.add(y - 1)
+                    for ticker in entities["tickers"]:
+                        for year in sorted(all_years):
+                            for component in formula_info.components:
+                                section, code = component.split(".")
+                                retrieval_queries.append(RetrievalQuery(
+                                    ticker=ticker,
+                                    year=year,
+                                    section=section,
+                                    indicator_code=code,
+                                ))
+                    logger.info("Step 1.4 Dynamic Formula: %s", formula_info.name)
 
-        # Bước 5: Tổng hợp kết quả
         result = self.query_builder.build(
             original_question=question,
             normalized_question=normalized,
@@ -142,7 +184,6 @@ class QueryPipeline:
         )
         logger.info("Step 1.5 QueryBuilder: %d retrieval queries", len(result.retrieval_queries))
 
-        # Lưu lại vào cache để dùng cho lần sau
         self._cache.set(question, result)
         return result
 

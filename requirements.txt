@@ -1,4 +1,4 @@
-faiss-cpu
+﻿faiss-cpu
 numpy
 pandas
 pytest
@@ -6,4 +6,10 @@ PyYAML
 rank-bm25
 rapidfuzz
 sentence-transformers
-ollama
+
+simpleeval
+tqdm
+huggingface_hub
+langgraph
+langchain-core
+pydantic
