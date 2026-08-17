@@ -75,12 +75,19 @@ class QueryRouter:
         is_comparison = self._has_comparison_keywords(q_lower)
 
         if num_tickers > 1 or num_years > 1 or is_comparison:
-            logger.debug("Router: multi_comparison (tickers=%d, years=%d, comparison=%s)",
-                         num_tickers, num_years, is_comparison)
+            logger.debug(
+                "Router: multi_comparison (tickers=%d, years=%d, comparison=%s)",
+                num_tickers, num_years, is_comparison,
+            )
             return "multi_comparison"
+
+        # Trường hợp không rõ ràng (default single_lookup) → hỏi LLM nếu được bật
+        if self._use_llm_fallback and self._llm_client:
+            return self.classify_with_llm(entities, question)
 
         logger.debug("Router: single_lookup (default)")
         return "single_lookup"
+
 
     def _is_derived(self, q_lower: str) -> bool:
         q_no_dia = remove_diacritics(q_lower)

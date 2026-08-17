@@ -7,6 +7,9 @@ from src.config_loader import load_config
 
 logger = logging.getLogger(__name__)
 
+# Cache model theo tên để tránh load lại nhiều lần (~500MB mỗi lần)
+_model_cache: dict = {}
+
 
 def _embedding_config() -> dict:
     logger.debug("Loading embedding configuration...")
@@ -49,7 +52,8 @@ def build_embedding(
 
     from sentence_transformers import SentenceTransformer
 
-    model = SentenceTransformer(model_name)
+    # Dùng cache để không phải load lại model mỗi lần gọi
+    model = _get_model(model_name)
 
     embeddings = model.encode(
         texts,
@@ -61,6 +65,15 @@ def build_embedding(
 
     logger.info(f"Built embeddings with shape: {embeddings.shape}")
     return embeddings.astype("float32")
+
+
+def _get_model(model_name: str):
+    """Trả về model đã cache, tránh load lại nhiều lần."""
+    if model_name not in _model_cache:
+        from sentence_transformers import SentenceTransformer
+        logger.info(f"Loading SentenceTransformer model: {model_name}")
+        _model_cache[model_name] = SentenceTransformer(model_name)
+    return _model_cache[model_name]
 
 def build_faiss_index(embeddings: np.ndarray):
     """
@@ -149,6 +162,8 @@ def dense_search(
     if normalize_embeddings is None:
         normalize_embeddings = _embedding_config()["normalize_embeddings"]
 
+    # Dùng _get_model để đảm bảo không load lại model khi đã cache
+    model = _get_model(model.name_or_path if hasattr(model, "name_or_path") else str(model))
     query_embedding = model.encode(
         [query],
         normalize_embeddings=normalize_embeddings,

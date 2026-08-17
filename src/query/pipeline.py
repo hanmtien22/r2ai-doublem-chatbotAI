@@ -17,7 +17,7 @@ from src.utils.cache import SimpleCache
 
 logger = logging.getLogger(__name__)
 
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "dictionaries"
 
 
 def _load_json(path: Path) -> dict:
@@ -87,7 +87,9 @@ class QueryPipeline:
         logger.info("QueryPipeline initialized")
 
     def process(self, question: str) -> QueryResult:
-        cached = self._cache.get(question)
+        # Normalize key: trim + lower để tăng cache hit rate
+        cache_key = question.strip().lower()
+        cached = self._cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit for question: '%s'", question[:50])
             return cached
@@ -184,7 +186,7 @@ class QueryPipeline:
         )
         logger.info("Step 1.5 QueryBuilder: %d retrieval queries", len(result.retrieval_queries))
 
-        self._cache.set(question, result)
+        self._cache.set(cache_key, result)
         return result
 
     @property

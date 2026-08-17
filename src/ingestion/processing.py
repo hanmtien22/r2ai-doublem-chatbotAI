@@ -96,7 +96,7 @@ def scan_financial_files(root_path: str | Path) -> list[Path]:
     return sorted(root.rglob("*.txt"))
 
 
-def extract_meatdata(path: Path) -> dict[str, Any]:
+def extract_metadata(path: Path) -> dict[str, Any]:
     """Extract ticker/year/report type from directories, filename and path."""
     normalized = normalize_text(str(path))
     years = re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", str(path))

@@ -59,7 +59,7 @@ Hãy viết một câu trả lời ngắn gọn, rõ ràng dựa trên kết qu�
     def __init__(self, llm_client: LLMClient):
         self.llm_client = llm_client
 
-    def format_answer(self, question: str, computed_result: Any, unit: Optional[str] = None) -> str:
+    def format_answer(self, question: str, computed_result: Any, unit: Optional[str] = None, is_fast_path: bool = False) -> str:
         logger.info("Generating natural language answer...")
 
         if computed_result is None:
@@ -78,6 +78,10 @@ Hãy viết một câu trả lời ngắn gọn, rõ ràng dựa trên kết qu�
             result_str += f" (giá trị gốc: {numeric_val:,.0f})"
         except (ValueError, TypeError):
             pass
+
+        # Fast-path: dùng template thảy vì gọi LLM để tiết kiệm latency và token
+        if is_fast_path:
+            return result_str
 
         user_msg = self._USER_TEMPLATE.format(
             question=question,

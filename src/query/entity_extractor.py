@@ -42,6 +42,10 @@ class EntityExtractor:
         self._alias_to_ticker = self._build_alias_to_ticker(entity_dict)
         self._all_indicator_names = self._load_schema_mapping(schema_mapping)
 
+        # Pre-sort 1 lần trong __init__ để tránh sort lại mỗi lần extract
+        self._sorted_ticker_aliases = sorted(self._alias_to_ticker.keys(), key=len, reverse=True)
+        self._sorted_indicator_aliases = sorted(self._indicator_aliases.keys(), key=len, reverse=True)
+
     # Ham xay dung mapping alias -> ticker tu entity_dict    
     def _build_alias_to_ticker(self, entity_dict: dict) -> dict[str,str]:
         alias_map = {} 
@@ -140,9 +144,8 @@ class EntityExtractor:
                 tickers.append(t)
 
         q_lower = question.lower()
-        # Sap xep lai cac alias theo do dai giam dan 
-        sorted_aliases = sorted(self._alias_to_ticker.keys(), key=len, reverse=True)
-        for alias in sorted_aliases:
+        # Dùng danh sách đã sort sẵn từ __init__, không cần sort lại
+        for alias in self._sorted_ticker_aliases:
             if alias in q_lower:
                 ticker = self._alias_to_ticker[alias] # Lay ticker tu alias_to_ticker
                 if ticker not in tickers:
@@ -162,7 +165,7 @@ class EntityExtractor:
         q_clean = re.sub(r'\s+', ' ', q_clean).strip()
         q_no_diacritics = remove_diacritics(q_clean)
 
-        sorted_aliases = sorted(self._indicator_aliases.keys(), key=len, reverse=True)
+        sorted_aliases = self._sorted_indicator_aliases  # Dùng list đã pre-sort từ __init__
         for alias in sorted_aliases:
             if alias.isnumeric() or len(alias) <= 2:
                 continue

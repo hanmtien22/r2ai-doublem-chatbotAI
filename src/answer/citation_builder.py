@@ -19,8 +19,9 @@ class CitationBuilder:
             
         citations = []
         for i, hit in enumerate(hits):
-            # Metadata structure có thể thay đổi tùy thuộc vào Indexer
-            meta = hit.get("metadata", {})
+            # BM25 trả về {score, document: {...}}, FAISS cũng tương tự
+            doc = hit.get("document", hit)
+            meta = doc.get("metadata", hit.get("metadata", {}))
             ticker = meta.get("ticker", "UNKNOWN")
             year = meta.get("year", "UNKNOWN")
             doc_type = meta.get("document_type", "BCTC")

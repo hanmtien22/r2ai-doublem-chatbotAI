@@ -33,6 +33,7 @@ class QuestionOrchestrator:
         is_hard = False
         if len(tickers) > 1 or len(years) > 1:
             is_hard = True
+        # derived_indicator cũng cần HARD vì cần tính toán công thức (vd: tỷ suất lợi nhuận)
         if q_type in ["multi_comparison", "derived_indicator"]:
             is_hard = True
 

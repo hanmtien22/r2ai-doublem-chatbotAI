@@ -18,7 +18,7 @@ from .processing import (
     build_dictionary_report, build_entity_dictionary,
     build_indicator_aliases_from_stats, build_schema_mapping_from_stats,
     collect_dictionary_features, create_dictionary_stats, detect_tables,
-    extract_meatdata, parse_table_lines, save_json, save_parsed_table,
+    extract_metadata, parse_table_lines, save_json, save_parsed_table,
     infer_report_type, scan_financial_files, validate_table,
 )
 
@@ -49,7 +49,7 @@ def run_ingestion_pipeline(config: dict | None = None) -> dict:
         file_error_start = len(errors)
         logger.info("Processing file: %s", path)
         try:
-            metadata = extract_meatdata(path)
+            metadata = extract_metadata(path)
             text = path.read_text(encoding="utf-8", errors="replace")
             lines = text.splitlines()
             tables = detect_tables(lines)

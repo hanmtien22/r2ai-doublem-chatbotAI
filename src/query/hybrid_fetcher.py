@@ -1,4 +1,4 @@
-﻿import pandas as pd
+import pandas as pd
 import pickle
 import faiss
 import logging
@@ -12,6 +12,15 @@ from src.utils.text import remove_diacritics
 
 logger = logging.getLogger(__name__)
 
+# Từ khoá dùng để lọc notes chunk — đưa ra ngoài để dễ tuỳ chỉnh khi mở rộng domain
+NOTES_FILTER_KEYWORDS: List[str] = [
+    "tiền gửi", "tctd", "tổ chức tín dụng", "ngân hàng"
+]
+# Từ khoá của chỉ tiêu cụ thể trong notes (có thể override từ config sau này)
+NOTES_SPECIFIC_TERMS: List[str] = [
+    "tiền gửi tại các tctd khác", "tiền gửi tại tctd", "tctd khác"
+]
+
 class EasyHybridSolver:
     """Công cụ tìm kiếm bốc số từ CSV (Exact Match) và Fallback bằng BM25 / FAISS Vector Search."""
     def __init__(self, data_dir: str = "data"):
@@ -20,13 +29,28 @@ class EasyHybridSolver:
         self.parsed_tables_dir = self.data_dir / "parsed_tables" / "tables"
         self.indexes_dir = self.data_dir / "indexes"
         self.parsed_indexes_dir = self.data_dir / "parsed_tables" / "indexes"
-        
+
+        # Cache CSV DataFrame vào RAM: tránh đọc lại file mỗi lần query
+        self._csv_cache: dict[str, pd.DataFrame] = {}
+
+        # Đọc config để biết có dùng dense search (FAISS) không
+        self._dense_enabled = self._read_dense_enabled_config()
+
         # Biến chứa dữ liệu trong RAM
         self.bm25_index = None
         self.faiss_index = None
-        self.documents_map: List[dict] = [] # Lưu metadata của các vector từ documents.json
+        self.documents_map: List[dict] = []
         self.embed_model = None
         self._load_indexes()
+
+    @staticmethod
+    def _read_dense_enabled_config() -> bool:
+        """Đọc cờ dense_enabled từ config.yaml, mặc định True nếu không đọc được."""
+        try:
+            from src.config_loader import load_config
+            return bool(load_config().get("retrieval", {}).get("dense_enabled", True))
+        except Exception:
+            return True
 
     def _get_active_tables_dir(self) -> Path:
         """Tìm thư mục chứa các bảng csv đã parse."""
@@ -35,6 +59,13 @@ class EasyHybridSolver:
         if self.parsed_tables_dir.exists():
             return self.parsed_tables_dir
         return self.tables_dir
+
+    def _get_csv(self, file_path: Path, **kwargs) -> pd.DataFrame:
+        """Lấy DataFrame từ cache hoặc đọc từ đĩa nếu chưa có."""
+        path_str = str(file_path)
+        if path_str not in self._csv_cache:
+            self._csv_cache[path_str] = pd.read_csv(file_path, **kwargs)
+        return self._csv_cache[path_str]
 
     def _load_indexes(self):
         """Load BM25 và FAISS 1 lần duy nhất khi khởi động hệ thống."""
@@ -53,21 +84,24 @@ class EasyHybridSolver:
         else:
             logger.warning("BM25 index not found in standard paths.")
 
-        # Load FAISS và documents.json (lazy load)
+        # Load FAISS và documents.json (lazy load, chỉ khi dense_enabled=true trong config)
         self.faiss_path = None
         self.docs_path = None
-        for d in idx_dirs:
-            p1 = d / "faiss" / "index.faiss"
-            p2 = d / "faiss" / "documents.json"
-            if p1.exists() and p2.exists():
-                self.faiss_path = p1
-                self.docs_path = p2
-                break
-                
-        if self.faiss_path and self.docs_path:
-            logger.info(f"FAISS index located at {self.faiss_path}. Will lazy-load when fallback is needed.")
+        if not self._dense_enabled:
+            logger.info("FAISS dense search disabled by config (dense_enabled=false). Skipping FAISS load.")
         else:
-            logger.warning("FAISS index or documents.json not found in standard paths.")
+            for d in idx_dirs:
+                p1 = d / "faiss" / "index.faiss"
+                p2 = d / "faiss" / "documents.json"
+                if p1.exists() and p2.exists():
+                    self.faiss_path = p1
+                    self.docs_path = p2
+                    break
+
+            if self.faiss_path and self.docs_path:
+                logger.info(f"FAISS index located at {self.faiss_path}. Will lazy-load when fallback is needed.")
+            else:
+                logger.warning("FAISS index or documents.json not found in standard paths.")
 
     def _ensure_bm25_loaded(self):
         """Lazy load BM25 index khi thực sự cần fallback."""
@@ -172,7 +206,8 @@ class EasyHybridSolver:
                 continue
 
             try:
-                df = pd.read_csv(file_path, dtype={"item_code": str})
+                # Dùng cache để tránh đọc lại file CSV mỗi lần query
+                df = self._get_csv(file_path, dtype={"item_code": str})
                 if 'period' in df.columns and 'value' in df.columns:
                     match = pd.DataFrame()
                     if item_code and 'item_code' in df.columns:
@@ -253,8 +288,12 @@ class EasyHybridSolver:
                 # 2. Nếu không có bảng chính, tìm trong Notes Chunks
                 notes_docs = [d for d in filtered_docs if d.get("metadata", {}).get("document_type") == "notes" or d.get("metadata", {}).get("value") is None]
                 if notes_docs:
-                    # Lọc trước các chunks có title hoặc text liên quan đến tiền gửi / TCTD
-                    relevant_notes = [d for d in notes_docs if any(kw in f"{d.get('metadata', {}).get('section_title', '')} {d.get('text', '')}".lower() for kw in ["tiền gửi", "tctd", "tổ chức tín dụng", "ngân hàng"])]
+                    # Lọc chunk notes liên quan đến metric — dùng NOTES_FILTER_KEYWORDS thay vì hardcode
+                    relevant_notes = [
+                        d for d in notes_docs
+                        if any(kw in f"{d.get('metadata', {}).get('section_title', '')} {d.get('text', '')}".lower()
+                               for kw in NOTES_FILTER_KEYWORDS)
+                    ]
                     target_notes = relevant_notes if relevant_notes else notes_docs
                     
                     notes_texts = [f"{d.get('metadata', {}).get('section_title', '')}\n{d.get('text', '')}" for d in target_notes]
@@ -272,8 +311,8 @@ class EasyHybridSolver:
                         lines = text.splitlines()
                         for line in lines:
                             line_lower = line.lower()
-                            # Tìm dòng chứa đúng cụm từ chỉ tiêu (vd: 'tiền gửi tại các tctd khác')
-                            if any(term in line_lower for term in ["tiền gửi tại các tctd khác", "tiền gửi tại tctd", "tctd khác"]) and "|" in line:
+                            # Dùng NOTES_SPECIFIC_TERMS thay vì hardcode cụm từ banking
+                            if any(term in line_lower for term in NOTES_SPECIFIC_TERMS) and "|" in line:
                                 nums = re.findall(r"(\d{1,3}(?:\.\d{3})+|\d+)", line)
                                 if nums:
                                     clean_val = int(nums[0].replace(".", ""))
@@ -330,7 +369,8 @@ class EasyHybridSolver:
                 continue
 
             try:
-                df = pd.read_csv(file_path)
+                # Dùng cache để tránh đọc lại file CSV mỗi lần query
+                df = self._get_csv(file_path)
                 if 'period' in df.columns and 'value' in df.columns and 'item_name_normalized' in df.columns:
                     period_df = df[df['period'] == float(period)]
                     if period_df.empty:
