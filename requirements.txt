@@ -6,7 +6,6 @@ PyYAML
 rank-bm25
 rapidfuzz
 sentence-transformers
-
 simpleeval
 tqdm
 huggingface_hub
