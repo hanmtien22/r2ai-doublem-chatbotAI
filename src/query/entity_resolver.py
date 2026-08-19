@@ -7,6 +7,7 @@ from src.utils.text import remove_diacritics
 
 logger = logging.getLogger(__name__)
 
+LIST_STOP_WORDS = ["của", "là", "bao", "nhiêu", "tỷ", "đồng", "triệu", "năm", "vào", "cuối", "đầu"]
 try:
     from rapidfuzz import fuzz, process as rf_process
     HAS_RAPIDFUZZ = True
@@ -66,7 +67,7 @@ class EntityResolver:
             self._tfidf_vectorizer = TfidfVectorizer(
                 analyzer="word",
                 ngram_range=(1, 3),
-                stop_words=["của", "là", "bao", "nhiêu", "tỷ", "đồng", "triệu", "năm", "vào", "cuối", "đầu"]
+                stop_words= LIST_STOP_WORDS
             )
             self._indicator_corpus = [ind["name_lower"] for ind in self._all_indicator_names]
             self._tfidf_matrix = self._tfidf_vectorizer.fit_transform(self._indicator_corpus)

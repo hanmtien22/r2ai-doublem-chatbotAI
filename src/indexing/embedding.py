@@ -162,8 +162,7 @@ def dense_search(
     if normalize_embeddings is None:
         normalize_embeddings = _embedding_config()["normalize_embeddings"]
 
-    # Dùng _get_model để đảm bảo không load lại model khi đã cache
-    model = _get_model(model.name_or_path if hasattr(model, "name_or_path") else str(model))
+    # Su dung truc tiep model duoc truyen vao, khong goi _get_model gay loi
     query_embedding = model.encode(
         [query],
         normalize_embeddings=normalize_embeddings,

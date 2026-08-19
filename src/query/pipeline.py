@@ -102,7 +102,7 @@ class QueryPipeline:
                      entities["tickers"], entities["years"], entities["indicators"])
         
         # Nếu indicators trả về là NOTES.UNKNOWN, sử dụng TF-IDF fallback ĐỂ CHECK TRƯỚC. 
-        # Nếu điểm cao (>0.6) thì ghi đè, nếu không thì giữ nguyên NOTES.UNKNOWN để Semantic Search lo
+        # Nếu điểm cao (>0.6) thì ghi đè, nếu không thì giữ nguyên NOTES.UNKNOWN để Semantic Search
         if entities["indicators"] and entities["indicator_codes"][0] == "NOTES.UNKNOWN" and self.router._use_llm_fallback:
             logger.info("Step 1.2b: Indicator is UNKNOWN, triggering TF-IDF fallback...")
             entities_to_remove = entities["tickers"] + [str(y) for y in entities["years"]]

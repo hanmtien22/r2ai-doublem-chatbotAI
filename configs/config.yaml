@@ -26,7 +26,7 @@ indexing:
   fail_on_error: false
 
 retrieval:
-  dense_enabled: false
+  dense_enabled: true
   reranker_model_name: null
   confidence_threshold: 0.5
   rrf_k: 60
