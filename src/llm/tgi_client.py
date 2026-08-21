@@ -101,7 +101,11 @@ class GenericLLMClient:
         max_tokens: int = 512,
         temperature: float = 0.1,
         json_mode: bool = False,
+        schema: any = None,
+        **kwargs,
     ) -> str:
+        if schema is not None:
+            json_mode = True
         """Single user-message call → trả về str."""
         messages = [{"role": "user", "content": prompt}]
         try:
