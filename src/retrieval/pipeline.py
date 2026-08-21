@@ -1,10 +1,11 @@
 import logging
 import json
+from collections import defaultdict
 import pickle
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from src.indexing.bm25 import bm25_search, tokenize_for_bm25
+from src.indexing.bm25 import bm25_search, bm25_search_subset, tokenize_for_bm25
 from src.indexing.embedding import dense_search
 from src.indexing.hybrid_search import reciprocal_rank_fusion
 from src.query.pipeline import QueryPipeline
@@ -45,7 +46,14 @@ class QueryRetrievalPipeline:
         self._reformulator = QueryReformulator(llm_client=llm_client)
         self._reranker = Reranker(model_name=reranker_model, enabled=reranker_enabled)
 
+        self._by_ticker: dict[str, list[int]] = {}
+        self._by_ticker_year: dict[tuple[str, int], list[int]] = {}
+        self._by_ticker_year_report: dict[tuple[str, int, str], list[int]] = {}
+        self._by_exact_key: dict[tuple[str, int, str, str], list[int]] = {}
+        self._notes_by_ticker_year: dict[tuple[str, int], list[int]] = {}
+
         self._load_indices()
+        self._build_metadata_index()
 
     def _load_indices(self):
         bm25_path = self.index_dir / "bm25.pkl"
@@ -86,6 +94,184 @@ class QueryRetrievalPipeline:
             except Exception as e:
                 logger.error("Error loading FAISS index: %s", e)
 
+    def _build_metadata_index(self) -> None:
+        """Index ngược ticker/năm/loại báo cáo -> vị trí document, để lọc trước khi xếp hạng."""
+        by_ticker = defaultdict(list)
+        by_ticker_year = defaultdict(list)
+        by_ticker_year_report = defaultdict(list)
+        by_exact_key = defaultdict(list)
+        notes_by_ticker_year = defaultdict(list)
+
+        for i, doc in enumerate(self.documents):
+            meta = doc.get("metadata", {})
+            ticker = str(meta.get("ticker", "")).upper()
+            if not ticker:
+                continue
+            by_ticker[ticker].append(i)
+
+            period = meta.get("period") or meta.get("year")
+            try:
+                period = int(period)
+            except (TypeError, ValueError):
+                continue
+            by_ticker_year[(ticker, period)].append(i)
+
+            report_type = str(meta.get("report_type", "")).lower()
+            if report_type:
+                by_ticker_year_report[(ticker, period, report_type)].append(i)
+
+            section = meta.get("section")
+            item_code = meta.get("item_code")
+            if section and item_code is not None:
+                by_exact_key[(ticker, period, str(section), str(item_code))].append(i)
+
+            if meta.get("document_type") == "notes":
+                notes_by_ticker_year[(ticker, period)].append(i)
+
+        self._by_ticker = dict(by_ticker)
+        self._by_ticker_year = dict(by_ticker_year)
+        self._by_ticker_year_report = dict(by_ticker_year_report)
+        self._by_exact_key = dict(by_exact_key)
+        self._notes_by_ticker_year = dict(notes_by_ticker_year)
+        logger.info("Metadata index: %d tickers, %d (ticker, year) cặp",
+                    len(self._by_ticker), len(self._by_ticker_year))
+
+    def _exact_lookup(self, query_result) -> list[dict]:
+        """Lấy thẳng dòng khớp ticker + period + section + item_code.
+
+        Với câu hỏi suy diễn (ROE, tăng trưởng…) một truy vấn BM25 duy nhất không
+        thể kéo về đồng thời mọi thành phần của công thức, nên phải tra riêng
+        từng thành phần rồi mới ghép lại.
+        """
+        if query_result is None or not self._by_exact_key:
+            return []
+
+        wanted_report = query_result.entities.report_type or "consolidated"
+        hits: list[dict] = []
+        seen: set[int] = set()
+
+        for rq in query_result.retrieval_queries:
+            ticker = str(rq.ticker).upper()
+            key = (ticker, int(rq.year), str(rq.section), str(rq.indicator_code))
+            indices = self._by_exact_key.get(key, [])
+            if not indices:
+                continue
+
+            # Ưu tiên đúng loại báo cáo, nếu không có thì lấy tất cả
+            preferred = [
+                i for i in indices
+                if str(self.documents[i].get("metadata", {}).get("report_type", "")).lower() == wanted_report
+            ]
+            for i in (preferred or indices):
+                if i in seen:
+                    continue
+                seen.add(i)
+                # Điểm cao hơn mọi kết quả BM25 để luôn đứng đầu danh sách
+                hits.append({"score": 1000.0, "document": self.documents[i], "match": "exact"})
+
+        if hits:
+            logger.info("Exact match: %d dòng khớp (ticker, năm, section, mã chỉ tiêu)", len(hits))
+        return hits
+
+    def _candidate_indices(self, filters: dict) -> Optional[list[int]]:
+        """Tập document ứng viên theo bộ lọc, nới lỏng dần khi quá hẹp.
+
+        Trả về None nghĩa là không lọc được gì -> tìm trên toàn corpus.
+        """
+        tickers = [t.upper() for t in filters.get("tickers", []) if t]
+        if not tickers or not self._by_ticker:
+            return None
+
+        years = [y for y in filters.get("years", []) if y]
+        report_type = filters.get("report_type")
+
+        # Chỉ tiêu không có trong từ điển schema -> số liệu nằm trong thuyết minh.
+        # Giới hạn vào chunk thuyết minh, nếu không các dòng bảng chính cùng ticker
+        # sẽ chiếm hết top-k chỉ vì trùng vài từ khoá.
+        if filters.get("sections") == ["NOTES"] and years and self._notes_by_ticker_year:
+            hits = [
+                i for t in tickers for y in years
+                for i in self._notes_by_ticker_year.get((t, int(y)), [])
+            ]
+            if hits:
+                logger.debug("Giới hạn tìm kiếm trong %d chunk thuyết minh", len(hits))
+                return sorted(set(hits))
+
+        # Chặt nhất: ticker + năm + loại báo cáo
+        if years and report_type:
+            hits = [
+                i for t in tickers for y in years
+                for i in self._by_ticker_year_report.get((t, int(y), report_type), [])
+            ]
+            if hits:
+                return sorted(set(hits))
+            logger.debug("Không có doc cho report_type=%s, bỏ ràng buộc này", report_type)
+
+        if years:
+            hits = [i for t in tickers for y in years for i in self._by_ticker_year.get((t, int(y)), [])]
+            if hits:
+                return sorted(set(hits))
+            logger.debug("Không có doc cho years=%s, bỏ ràng buộc năm", years)
+
+        hits = [i for t in tickers for i in self._by_ticker.get(t, [])]
+        return sorted(set(hits)) if hits else None
+
+    @staticmethod
+    def _dedupe_hits(hits: list[dict]) -> list[dict]:
+        """Bỏ các hit trùng nhau (cùng chỉ tiêu, cùng giá trị) để không chiếm chỗ top-k."""
+        seen = set()
+        unique = []
+        for h in hits:
+            meta = h.get("document", h).get("metadata", {})
+            key = (
+                meta.get("ticker"), meta.get("period"), meta.get("section"),
+                meta.get("item_code"), meta.get("value"), meta.get("report_type"),
+                None if meta.get("item_code") else h.get("document", h).get("chunk_id"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(h)
+        return unique
+
+    @staticmethod
+    def _rank_by_intent(hits: list[dict], query_result) -> list[dict]:
+        """Đưa dòng khớp đúng ý định câu hỏi lên đầu.
+
+        BM25 chỉ đo độ giống chữ, nên "Chi phí quản lý doanh nghiệp" có thể xếp
+        trên "Chi phí khác" dù câu hỏi đã xác định rõ mã chỉ tiêu IS.32. Khi đã
+        biết (section, item_code) và loại báo cáo thì ưu tiên chúng trước điểm BM25.
+        """
+        if query_result is None or not hits:
+            return hits
+
+        wanted_codes = {
+            (q.section, str(q.indicator_code)) for q in query_result.retrieval_queries
+        }
+        wanted_years = set(query_result.entities.years)
+        # Không nói rõ thì mặc định lấy báo cáo hợp nhất
+        wanted_report = query_result.entities.report_type or "consolidated"
+
+        def sort_key(hit: dict):
+            meta = hit.get("document", hit).get("metadata", {})
+            section = meta.get("section")
+            item_code = str(meta.get("item_code") or "")
+            period = meta.get("period")
+
+            code_match = (section, item_code) in wanted_codes
+            year_match = (not wanted_years) or (period in wanted_years)
+            report_match = str(meta.get("report_type", "")).lower() == wanted_report
+            has_value = meta.get("value") is not None
+
+            return (
+                not (code_match and year_match),   # khớp mã chỉ tiêu + đúng năm
+                not report_match,
+                not has_value,
+                -float(hit.get("score", 0.0)),
+            )
+
+        return sorted(hits, key=sort_key)
+
     def _filter_results(self, results: list[dict], metadata_filters: dict) -> list[dict]:
         if not metadata_filters:
             return results
@@ -104,17 +290,24 @@ class QueryRetrievalPipeline:
                     continue
 
             if years:
-                doc_year = meta.get("year") or meta.get("period")
+                # Ưu tiên `period`: bảng có year=2015 nhưng chứa cột so sánh period=2014,
+                # lấy `year` trước sẽ loại nhầm đúng dòng đang cần.
+                doc_year = meta.get("period")
+                if doc_year is None:
+                    doc_year = meta.get("year")
                 if doc_year and int(doc_year) not in years:
                     continue
 
             filtered.append(r)
         return filtered
 
-    def _search(self, search_text: str, top_k: int) -> tuple[list, list]:
+    def _search(self, search_text: str, top_k: int, filters: Optional[dict] = None) -> tuple[list, list]:
         bm25_res = []
         if self.bm25 and self.documents:
-            bm25_res = bm25_search(search_text, self.bm25, self.documents, top_k=top_k * 2)
+            candidates = self._candidate_indices(filters or {})
+            bm25_res = bm25_search_subset(
+                search_text, self.bm25, self.documents, candidates, top_k=top_k * 2
+            )
 
         dense_res = []
         if self.faiss_index and self.embed_model and self.dense_documents:
@@ -137,7 +330,7 @@ class QueryRetrievalPipeline:
         confidence_ok = False
 
         for attempt in range(self.max_reformulate_attempts + 1):
-            bm25_res, dense_res = self._search(search_text, top_k_per_query)
+            bm25_res, dense_res = self._search(search_text, top_k_per_query, filters)
             raw_confident, top_score = self._confidence_checker.check_raw_results(bm25_res)
             fused, filtered = self._fuse_and_filter(bm25_res, dense_res, filters, top_k_per_query)
             filter_ok = self._confidence_checker.check_filtered_hits(filtered, len(fused))
@@ -167,7 +360,18 @@ class QueryRetrievalPipeline:
                 else:
                     break
 
+        exact_hits = self._exact_lookup(query_result)
+        if exact_hits:
+            final_hits = exact_hits + final_hits
+            confidence_ok = True
+
+        final_hits = self._rank_by_intent(self._dedupe_hits(final_hits), query_result)
+
+        # Công thức suy diễn cần đủ mọi thành phần: cắt cứng ở top_k sẽ làm mất
+        # vế còn lại của phép tính, nên nới hạn mức theo số dòng khớp chính xác.
+        limit = max(top_k_per_query, len(exact_hits))
+
         query_info: Dict[str, Any] = query_result.to_dict() if query_result else {"query_type": "single_lookup"}
         query_info["retrieval_confidence_ok"] = confidence_ok
 
-        return {"query": query_info, "hits": final_hits[:top_k_per_query]}
+        return {"query": query_info, "hits": final_hits[:limit]}

@@ -14,8 +14,10 @@ class RetryManager:
         self.code_gen = code_gen
         self.sandbox = sandbox
         self.verifier = verifier
-        self.max_tier1_retries = 3  # runtime errors
-        self.max_tier2_retries = 2  # logic errors
+        # Mỗi lần sinh lại code là một lượt LLM sinh vài trăm token (~20s).
+        # 3x2 lượt khiến câu hỏi thất bại mất hơn 4 phút mà hiếm khi cứu được kết quả.
+        self.max_tier1_retries = 2  # runtime errors
+        self.max_tier2_retries = 1  # logic errors
 
     def _build_df_context(self, dfs: Dict[str, pd.DataFrame]) -> str:
         """Tóm tắt dtypes + 3 dòng đầu của mỗi df để nhúng vào feedback."""

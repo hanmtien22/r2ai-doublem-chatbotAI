@@ -36,6 +36,8 @@ class ExtractedEntities:
     years: list[int] = field(default_factory=list)
     indicators: list[str] = field(default_factory=list)
     indicator_codes: list[str] = field(default_factory=list)
+    report_type: Optional[str] = None
+    core_phrase: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -46,6 +48,7 @@ class MetadataFilters:
     tickers: list[str] = field(default_factory=list)
     years: list[int] = field(default_factory=list)
     sections: list[str] = field(default_factory=list)
+    report_type: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)

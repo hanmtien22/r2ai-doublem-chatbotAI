@@ -66,7 +66,9 @@ class FormulaResolver:
     # Load formula library tu file JSON, neu khong co duong dan thi load tu duong dan mac dinh
     def _load_formulas(self, path: Optional[str]) -> None:
         if path is None:
-            path = str(Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "formula_library.json")
+            from src.paths import dictionary_path
+
+            path = str(dictionary_path("formula_library.json"))
         try:
             with open(path, "r", encoding="utf-8") as f:
                 self._formulas = json.load(f)

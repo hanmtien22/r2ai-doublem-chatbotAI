@@ -9,6 +9,7 @@ import numpy as np
 from src.indexing.bm25 import bm25_search
 from src.indexing.embedding import dense_search
 from src.indexing.hybrid_search import reciprocal_rank_fusion
+from src.utils.text import remove_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,8 @@ class EasyHybridSolver:
     def __init__(self, data_dir: str = "data"):
         self.data_dir = Path(data_dir)
         self.tables_dir = self.data_dir / "tables"
+        # Ingestion ghi bảng vào data/parsed_tables/tables; data/tables chỉ là layout cũ
+        self.parsed_tables_dir = self.data_dir / "parsed_tables" / "tables"
         self.indexes_dir = self.data_dir / "indexes"
         self.parsed_indexes_dir = self.data_dir / "parsed_tables" / "indexes"
 
@@ -113,7 +116,7 @@ class EasyHybridSolver:
                 with open(self.bm25_path, "rb") as f:
                     self.bm25_index = pickle.load(f)
                 logger.info("Loaded BM25 index.")
-            else:
+            elif self.bm25_index is None:
                 logger.warning(f"BM25 index not found at {self.bm25_path}")
         except Exception as e:
             logger.error(f"Error load bm25 index: {e}")
@@ -161,10 +164,22 @@ class EasyHybridSolver:
         if self.bm25_index is not None:
             logger.info("falling back to bm25 + dense")
             val, doc, table, evidence = self._hybrid_search(ticker, period, metric_name)
-            
+
             if val is not None:
-                return val, doc , table, evidence
-            
+                return val, doc, table, evidence
+
+        # Trước khi bỏ cuộc: dò theo tên chỉ tiêu đã chuẩn hoá trong CSV
+        if ticker and period and metric_name:
+            val, doc, table, evidence = self._fallback_name_match_csv(
+                ticker, period, table_type, metric_name
+            )
+            if val is not None:
+                return val, doc, table, evidence
+
+        # Luôn trả đúng 4 giá trị: caller unpack tuple, trả None sẽ làm hỏng cả pipeline
+        logger.info("Không tìm thấy dữ liệu cho %s", inputs)
+        return None, "", "", {}
+    
     def _get_embedding_model(self):
         # Neu model da duoc load vao RAM
         if getattr(self, "embed_model", None) is not None:
@@ -238,12 +253,13 @@ class EasyHybridSolver:
         
     def _exact_match_csv(self, ticker: str, period: int, item_code: str, table_type: str, metric_name: str) -> Tuple[Any, str, str, dict]:
         """Tìm file CSV khớp Ticker, Year và lọc đúng dòng chứa item_code."""
-        if not self.tables_dir.exists():
+        tables_dir = self._get_active_tables_dir()
+        if not tables_dir.exists():
             return None, "", "", {}
             
         # Giả sử convention file là: {ticker}_{year}_consolidated_{table_type}.csv
         # Dò tìm tất cả file bắt đầu bằng ticker
-        for file_path in self.tables_dir.glob(f"{ticker}_*.csv"):
+        for file_path in tables_dir.glob(f"{ticker}_*.csv"):
             if table_type and table_type not in file_path.name:
                 continue
                 

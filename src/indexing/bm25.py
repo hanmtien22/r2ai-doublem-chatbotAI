@@ -50,6 +50,29 @@ def build_bm25_index(documents: list[dict], output_path: str | Path) -> None:
     logger.info(f"Successfully saved BM25 index to {output_path}")
 
 
+def bm25_search_subset(query: str, bm25, documents: list[dict], candidates, top_k: int) -> list[dict]:
+    """Xếp hạng BM25 chỉ trong tập tài liệu ứng viên (đã lọc theo metadata).
+
+    Lọc trước rồi mới xếp hạng, thay vì lấy top-k toàn corpus rồi mới lọc — cách
+    sau gần như luôn trả về rỗng khi corpus lớn hơn nhiều lần top-k.
+    """
+    if candidates is None:
+        return bm25_search(query, bm25, documents, top_k)
+
+    candidates = np.asarray(candidates, dtype=np.int64)
+    if candidates.size == 0:
+        return []
+
+    tokens = tokenize_for_bm25(query)
+    scores = bm25.get_scores(tokens)[candidates]
+    order = np.argsort(scores)[::-1][:top_k]
+
+    return [
+        {"score": float(scores[i]), "document": documents[int(candidates[i])]}
+        for i in order
+    ]
+
+
 def bm25_search(query: str, bm25, documents: list[str], top_k: int) -> list[dict]:
     logger.info(f"Performing BM25 search for query: '{query}' with top_k={top_k}")
     tokens = tokenize_for_bm25(query)

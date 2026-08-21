@@ -14,11 +14,9 @@ from src.query.query_builder import QueryBuilder
 from src.query.models import QueryResult, RetrievalQuery
 from src.llm.client import LLMClient
 from src.utils.cache import SimpleCache
+from src.paths import dictionary_path
 
 logger = logging.getLogger(__name__)
-
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "dictionaries"
-
 
 def _load_json(path: Path) -> dict:
     try:
@@ -45,12 +43,14 @@ class QueryPipeline:
         cache_enabled: bool = True,
         cache_max_size: int = 1000,
     ):
+        # dictionary_path dò cả /kaggle/input lẫn repo, nên notebook Kaggle
+        # không phải copy từ điển vào đúng chỗ mới chạy được.
         if entity_dict is None:
-            entity_dict = _load_json(_DATA_DIR / "entity_dictionary.json")
+            entity_dict = _load_json(dictionary_path("entity_dictionary.json"))
         if indicator_aliases is None:
-            indicator_aliases = _load_json(_DATA_DIR / "indicator_aliases.json")
+            indicator_aliases = _load_json(dictionary_path("indicator_aliases.json"))
         if schema_mapping is None:
-            schema_mapping = _load_json(_DATA_DIR / "schema_mapping.json")
+            schema_mapping = _load_json(dictionary_path("schema_mapping.json"))
 
         self.preprocessor = QueryPreprocessor(
             abbreviations_path=abbreviations_path,

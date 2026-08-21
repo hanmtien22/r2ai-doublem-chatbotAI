@@ -20,6 +20,11 @@ _TYPO_MAP = {
     "bang can doi": "bang can doi ke toan",
 }
 
+# Các viết tắt đơn vị tiền tệ chỉ được mở rộng khi đứng ngay sau một con số.
+# Nếu không, "ty" trong "công ty" bị đổi thành "ty dong" -> hỏng toàn bộ
+# việc nhận diện "công ty mẹ" / "công ty cổ phần" ở bước sau.
+_UNIT_ABBRS = {"ty", "tr", "ng", "k", "m", "b"}
+
 _RELATIVE_YEAR_PATTERNS = [
     (re.compile(r"n[aă]m\s+ngo[aá]i", re.IGNORECASE), -1),
     (re.compile(r"n[aă]m\s+tr[uư][oơ]c", re.IGNORECASE), -1),
@@ -50,7 +55,9 @@ class QueryPreprocessor:
 
     def _load_abbreviations(self, path: Optional[str]) -> None:
         if path is None:
-            path = str(Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "abbreviations.json")
+            from src.paths import dictionary_path
+
+            path = str(dictionary_path("abbreviations.json"))
         try:
             with open(path, "r", encoding="utf-8") as f:
                 self._abbreviations = json.load(f)
@@ -94,9 +101,14 @@ class QueryPreprocessor:
         for abbr in sorted_abbrs:
             if len(abbr) < 2:
                 continue
-            pattern = re.compile(r"(?<![a-zA-ZÀ-ỹ])" + re.escape(abbr) + r"(?![a-zA-ZÀ-ỹ])", re.IGNORECASE)
+            if abbr.lower() in _UNIT_ABBRS:
+                # Chỉ mở rộng khi đứng sau một con số: "5 ty" -> "5 ty dong"
+                prefix = r"(?<=\d)\s*"
+            else:
+                prefix = r"(?<![a-zA-ZÀ-ỹ])"
+            pattern = re.compile(prefix + re.escape(abbr) + r"(?![a-zA-ZÀ-ỹ])", re.IGNORECASE)
             if pattern.search(text):
-                text = pattern.sub(self._abbreviations[abbr], text)
+                text = pattern.sub(" " + self._abbreviations[abbr], text)
         return text
 
     def _fix_typos(self, text: str) -> str:

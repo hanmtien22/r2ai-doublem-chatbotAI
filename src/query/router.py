@@ -81,6 +81,14 @@ class QueryRouter:
             )
             return "multi_comparison"
 
+        # Đúng 1 công ty + 1 năm, lại không có từ khoá so sánh hay chỉ số suy diễn
+        # (đã kiểm ở trên) thì chắc chắn là tra cứu đơn. Hỏi LLM ở đây vừa chậm
+        # vừa dễ bị phân loại nhầm thành multi_comparison, khiến pipeline bỏ qua
+        # fast-path và rơi vào vòng sinh code tốn hàng phút.
+        if num_tickers == 1 and num_years == 1:
+            logger.debug("Router: single_lookup (1 công ty, 1 năm, không có từ khoá so sánh)")
+            return "single_lookup"
+
         # Trường hợp không rõ ràng (default single_lookup) → hỏi LLM nếu được bật
         if self._use_llm_fallback and self._llm_client:
             return self.classify_with_llm(entities, question)

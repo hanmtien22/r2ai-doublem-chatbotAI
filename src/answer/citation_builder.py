@@ -23,12 +23,19 @@ class CitationBuilder:
             doc = hit.get("document", hit)
             meta = doc.get("metadata", hit.get("metadata", {}))
             ticker = meta.get("ticker", "UNKNOWN")
-            year = meta.get("year", "UNKNOWN")
-            doc_type = meta.get("document_type", "BCTC")
-            page = meta.get("page", "?")
-            table_name = meta.get("table_name", "Bảng dữ liệu")
-            
-            cite = f"[{i+1}] {ticker} - {year} ({doc_type}), {table_name}, Trang {page}"
+            year = meta.get("period") or meta.get("year") or "UNKNOWN"
+            report_type = {"separate": "riêng", "consolidated": "hợp nhất"}.get(
+                str(meta.get("report_type", "")).lower(), ""
+            )
+            # Chunk thuyết minh không có `table_name`, chỉ có tiêu đề mục
+            table_name = meta.get("table_name") or meta.get("section_title") or "Bảng dữ liệu"
+            line = meta.get("start_line")
+            location = f"dòng {line}" if line else "Trang ?"
+
+            label = f"{ticker} - {year}"
+            if report_type:
+                label += f" (BCTC {report_type})"
+            cite = f"[{i+1}] {label}, {table_name}, {location}"
             if cite not in citations:
                 citations.append(cite)
                 

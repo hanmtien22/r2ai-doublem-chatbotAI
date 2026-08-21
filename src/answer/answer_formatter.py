@@ -1,27 +1,54 @@
 import logging
 import math
+import re
 from typing import Any, Optional
 
 from src.llm.client import LLMClient
+from src.utils.text import remove_diacritics
 
 logger = logging.getLogger(__name__)
 
 _BILLION_VND = 1_000_000_000
 _MILLION_VND = 1_000_000
 
+# Đơn vị người dùng hỏi ("... là bao nhiêu triệu đồng?") -> (hệ số, tên hiển thị)
+# "ty" BẮT BUỘC đi kèm "dong"/"vnd": bỏ dấu thì "công ty" cũng thành "cong ty",
+# nếu để phần đơn vị là tuỳ chọn thì mọi câu hỏi chứa "công ty" đều bị hiểu nhầm
+# là đang hỏi theo đơn vị tỷ đồng.
+_REQUESTED_UNITS = [
+    (re.compile(r"\bnghin\s*ty\s*(?:dong|vnd)\b", re.IGNORECASE), 1_000 * _BILLION_VND, "nghìn tỷ đồng"),
+    (re.compile(r"\bty\s*(?:dong|vnd)\b", re.IGNORECASE), _BILLION_VND, "tỷ đồng"),
+    (re.compile(r"\btrieu\s*(?:dong|vnd)?\b", re.IGNORECASE), _MILLION_VND, "triệu đồng"),
+    (re.compile(r"\bnghin\s*(?:dong|vnd)\b", re.IGNORECASE), 1_000, "nghìn đồng"),
+    (re.compile(r"\bphan tram\b|%", re.IGNORECASE), 1, "%"),
+]
+
+
+def detect_requested_unit(question: str):
+    """Đơn vị mà câu hỏi yêu cầu trả lời, hoặc None nếu không nói rõ."""
+    normalized = remove_diacritics(question.lower())
+    for pattern, factor, label in _REQUESTED_UNITS:
+        if pattern.search(normalized):
+            return factor, label
+    return None
+
+
+def _to_vnd(value: float, unit: str = "vnd") -> float:
+    """Quy giá trị từ đơn vị gốc của dữ liệu về VND."""
+    unit_lower = remove_diacritics((unit or "vnd").lower().strip())
+
+    if "trieu" in unit_lower or "million" in unit_lower:
+        return value * _MILLION_VND
+    if re.search(r"\bty\b", unit_lower) or "billion" in unit_lower:
+        return value * _BILLION_VND
+    if "nghin" in unit_lower or "ngan" in unit_lower or "thousand" in unit_lower:
+        return value * 1_000
+    return value
+
 
 def _auto_format_vnd(value: float, unit: str = "vnd") -> str:
     """Quy về VND rồi format thành chuỗi dễ đọc (tỷ/triệu/nghìn đồng)."""
-    unit_lower = (unit or "vnd").lower().strip()
-
-    if unit_lower in ("trieu", "triệu", "million"):
-        value_vnd = value * _MILLION_VND
-    elif unit_lower in ("ty", "tỷ", "billion"):
-        value_vnd = value * _BILLION_VND
-    elif unit_lower in ("nghin", "nghìn", "thousand"):
-        value_vnd = value * 1_000
-    else:
-        value_vnd = value
+    value_vnd = _to_vnd(value, unit)
 
     abs_val = abs(value_vnd)
     sign = "-" if value_vnd < 0 else ""
@@ -74,8 +101,19 @@ Hãy viết một câu trả lời ngắn gọn, rõ ràng dựa trên kết qu�
         result_str = str(computed_result)
         try:
             numeric_val = float(computed_result)
-            result_str = _auto_format_vnd(numeric_val, unit or "vnd")
-            result_str += f" (giá trị gốc: {numeric_val:,.0f})"
+            value_vnd = _to_vnd(numeric_val, unit or "vnd")
+            requested = detect_requested_unit(question)
+            if str(unit).strip() == "%" or (requested and requested[1] == "%"):
+                # Tỷ lệ: giữ nguyên con số, không quy đổi sang đơn vị tiền tệ
+                result_str = f"{numeric_val:,.2f}%"
+            elif requested:
+                # Trả lời đúng đơn vị câu hỏi yêu cầu, kèm số VND gốc để đối chiếu
+                factor, label = requested
+                result_str = f"{value_vnd / factor:,.2f} {label}"
+                result_str += f" (giá trị gốc: {value_vnd:,.0f} VND)"
+            else:
+                result_str = _auto_format_vnd(numeric_val, unit or "vnd")
+                result_str += f" (giá trị gốc: {value_vnd:,.0f})"
         except (ValueError, TypeError):
             pass
 

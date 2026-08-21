@@ -19,6 +19,17 @@ def _exec_worker(
 ) -> None:
     import io, contextlib, math
     import pandas as pd
+    import numpy as np
+
+    # Code do LLM sinh hay mở đầu bằng "import pandas as pd"; nếu chặn hết
+    # __import__ thì mọi lần sinh như vậy đều chết ở dòng đầu tiên.
+    _ALLOWED_MODULES = {"pandas", "numpy", "math", "statistics", "decimal", "datetime", "re"}
+
+    def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+        root = name.split(".")[0]
+        if root not in _ALLOWED_MODULES:
+            raise ImportError(f"Module '{name}' không được phép trong sandbox")
+        return __import__(name, globals, locals, fromlist, level)
 
     env_globals: Dict[str, Any] = {
         "__builtins__": {
@@ -29,8 +40,11 @@ def _exec_worker(
             "enumerate": enumerate, "zip": zip, "map": map, "filter": filter,
             "isinstance": isinstance, "type": type, "print": print,
             "None": None, "True": True, "False": False,
+            "any": any, "all": all, "abs": abs, "divmod": divmod,
+            "__import__": _safe_import,
         },
         "pd": pd,
+        "np": np,
         "math": math,
     }
 
