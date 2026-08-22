@@ -46,11 +46,26 @@ Produce valid JSON matching the ExecutionPlan schema.
         query = state["query"]
         
         prompt = self._build_planner_prompt(query)
-        response = self.llm_client.generate(prompt, schema=ExecutionPlan, temperature=0.1)
+        raw_response = self.llm_client.generate(prompt, schema=ExecutionPlan, temperature=0.1)
         
-        if "error" in response:
-            logger.error(f"Planner failed: {response['error']}")
-            return {"plan": [], "current_step": 0, "error": response["error"]}
+        if not raw_response or not isinstance(raw_response, str):
+            logger.error("Planner failed: LLM returned empty or non-string response")
+            return {"plan": [], "current_step": 0, "error": "LLM returned empty response"}
+
+        try:
+            text = raw_response.strip()
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+            response = json.loads(text)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Planner failed: cannot parse LLM response as JSON: {e}")
+            return {"plan": [], "current_step": 0, "error": f"JSON parse error: {e}"}
+
+        if not isinstance(response, dict):
+            logger.error("Planner failed: parsed response is not a dict")
+            return {"plan": [], "current_step": 0, "error": "Response is not a dict"}
             
         steps = response.get("steps", [])
         final_ans_var = response.get("final_answer_variable")

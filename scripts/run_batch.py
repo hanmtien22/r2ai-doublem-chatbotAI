@@ -10,10 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.orchestrator import QuestionOrchestrator
 
 def setup_logging():
+    log_dir = Path('data')
+    log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        filename='data/batch_run.log',
+        filename=str(log_dir / 'batch_run.log'),
         filemode='a'
     )
     # Log errors to console as well
