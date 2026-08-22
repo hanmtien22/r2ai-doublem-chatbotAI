@@ -5,10 +5,15 @@ import sys
 import time
 from pathlib import Path
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.orchestrator import QuestionOrchestrator
+
+# Lock để ghi file an toàn trong môi trường đa luồng
+file_lock = threading.Lock()
 
 def setup_logging():
     log_dir = Path('data')
@@ -24,6 +29,34 @@ def setup_logging():
     console.setLevel(logging.ERROR)
     logging.getLogger('').addHandler(console)
 
+def process_single_question(q, orchestrator, jsonl_output):
+    q_id = q.get("id")
+    q_text = q.get("question")
+    
+    try:
+        # Xử lý
+        result = orchestrator.process_question(q_id, q_text)
+        
+        # Ghi ra file ngay lập tức (Thread-safe)
+        with file_lock:
+            with open(jsonl_output, 'a', encoding='utf-8') as out_f:
+                out_f.write(json.dumps(result, ensure_ascii=False) + "\n")
+                out_f.flush()
+        
+    except Exception as e:
+        logging.error(f"Error processing question {q_id}: {e}")
+        # Ghi tạm lỗi để chạy tiếp
+        error_res = {
+            "id": q_id,
+            "question": q_text,
+            "answer": None,
+            "error": str(e)
+        }
+        with file_lock:
+            with open(jsonl_output, 'a', encoding='utf-8') as out_f:
+                out_f.write(json.dumps(error_res, ensure_ascii=False) + "\n")
+                out_f.flush()
+
 def main():
     parser = argparse.ArgumentParser(description="Run full dataset batch")
     parser.add_argument("--input", type=str, default="data/easy_questions.json", help="Input questions JSON or JSONL file")
@@ -32,6 +65,7 @@ def main():
     parser.add_argument("--api-key", type=str, default="EMPTY", help="API Key")
     parser.add_argument("--model", type=str, default="qwen/qwen-2.5-72b-instruct:free", help="Model ID")
     parser.add_argument("--data-dir", type=str, default="data", help="Data directory containing tables and indexes")
+    parser.add_argument("--workers", type=int, default=4, help="Number of concurrent workers for multi-threading")
     
     args = parser.parse_args()
     setup_logging()
@@ -89,35 +123,16 @@ def main():
     to_process = [q for q in questions if q.get("id") not in processed_ids]
     print(f"Total questions: {len(questions)}. Already processed: {len(processed_ids)}. Remaining: {len(to_process)}")
 
-    # Chạy vòng lặp với thanh tiến độ (Ghi ra file tạm JSONL)
+    # Chạy đa luồng (Multi-threading) với ThreadPoolExecutor
     if to_process:
-        with open(jsonl_output, 'a', encoding='utf-8') as out_f:
-            for q in tqdm(to_process, desc="Processing"):
-                q_id = q.get("id")
-                q_text = q.get("question")
-                
-                try:
-                    # Xử lý
-                    result = orchestrator.process_question(q_id, q_text)
-                    
-                    # Ghi ra file ngay lập tức
-                    out_f.write(json.dumps(result, ensure_ascii=False) + "\n")
-                    out_f.flush()
-                    
-                    # Tạm dừng 1 giây giữa các câu hỏi để tránh Rate Limit API (429)
-                    time.sleep(1.0)
-                    
-                except Exception as e:
-                    logging.error(f"Error processing question {q_id}: {e}")
-                    # Ghi tạm lỗi để chạy tiếp
-                    error_res = {
-                        "id": q_id,
-                        "question": q_text,
-                        "answer": None,
-                        "error": str(e)
-                    }
-                    out_f.write(json.dumps(error_res, ensure_ascii=False) + "\n")
-                    out_f.flush()
+        print(f"Starting {args.workers} concurrent workers...")
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            # Nạp tất cả các câu hỏi vào ThreadPool
+            futures = [executor.submit(process_single_question, q, orchestrator, jsonl_output) for q in to_process]
+            
+            # Cập nhật thanh tiến độ khi từng task hoàn thành
+            for _ in tqdm(as_completed(futures), total=len(to_process), desc="Processing"):
+                pass
 
     # Convert file JSONL sang JSON chuẩn ở cuối
     if jsonl_output.exists():
