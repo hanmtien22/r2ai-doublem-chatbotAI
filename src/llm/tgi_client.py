@@ -75,15 +75,21 @@ class GenericLLMClient:
                 return response.json()["choices"][0]["message"]["content"]
 
             except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code in (429, 503, 502):
-                    last_error = e
-                    wait = self.retry_delay * (2**attempt)
-                    logger.warning(
-                        "LLM server overloaded/Rate Limit (429) (attempt %d/%d). Đang tạm nghỉ %.1f giây để tránh block...",
-                        attempt + 1, self.max_retries, wait,
-                    )
-                    time.sleep(wait)
-                    continue
+                if e.response is not None:
+                    # Nếu là lỗi 400 Bad Request, log luôn nội dung chi tiết server trả về
+                    if e.response.status_code == 400:
+                        logger.error(f"LLM 400 Bad Request. Server reply: {e.response.text}")
+                    
+                    if e.response.status_code in (429, 503, 502):
+                        last_error = e
+                        wait = self.retry_delay * (2**attempt)
+                        logger.warning(
+                            "LLM server overloaded/Rate Limit (429) (attempt %d/%d). Đang tạm nghỉ %.1f giây để tránh block...",
+                            attempt + 1, self.max_retries, wait,
+                        )
+                        time.sleep(wait)
+                        continue
+                        
                 logger.error("LLM HTTP error: %s", e)
                 raise
 
