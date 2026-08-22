@@ -21,14 +21,20 @@ class GenericLLMClient:
         endpoint: str = "https://openrouter.ai/api/v1",
         api_key: str = "EMPTY",
         model: str = "qwen/qwen-2.5-7b-instruct:free",
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
+        max_retries: int = 6,  # Tăng số lần thử lại từ 3 lên 6
+        retry_delay: float = 3.0,  # Thời gian chờ cơ bản là 3s (tăng dần 3, 6, 12, 24...)
         timeout: int = 120,
     ):
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.model = model
-        self.chat_url = f"{self.endpoint}/chat/completions"
+        
+        # Sửa lỗi 404: Không nối thêm /chat/completions nếu URL đã có sẵn
+        if self.endpoint.endswith("/chat/completions"):
+            self.chat_url = self.endpoint
+        else:
+            self.chat_url = f"{self.endpoint}/chat/completions"
+            
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.timeout = timeout
@@ -67,11 +73,11 @@ class GenericLLMClient:
                 return response.json()["choices"][0]["message"]["content"]
 
             except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code in (429, 503):
+                if e.response is not None and e.response.status_code in (429, 503, 502):
                     last_error = e
                     wait = self.retry_delay * (2**attempt)
                     logger.warning(
-                        "LLM server overloaded (attempt %d/%d), retry in %.1fs…",
+                        "LLM server overloaded/Rate Limit (429) (attempt %d/%d). Đang tạm nghỉ %.1f giây để tránh block...",
                         attempt + 1, self.max_retries, wait,
                     )
                     time.sleep(wait)
