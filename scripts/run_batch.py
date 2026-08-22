@@ -102,12 +102,12 @@ def main():
                     
                     # Ghi ra file ngay lập tức
                     out_f.write(json.dumps(result, ensure_ascii=False) + "\n")
-                out_f.flush()
-                
-                # Tạm dừng 1 giây giữa các câu hỏi để tránh Rate Limit API (429)
-                time.sleep(1.0)
-                
-            except Exception as e:
+                    out_f.flush()
+                    
+                    # Tạm dừng 1 giây giữa các câu hỏi để tránh Rate Limit API (429)
+                    time.sleep(1.0)
+                    
+                except Exception as e:
                     logging.error(f"Error processing question {q_id}: {e}")
                     # Ghi tạm lỗi để chạy tiếp
                     error_res = {
