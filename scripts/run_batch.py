@@ -28,9 +28,9 @@ def main():
     parser = argparse.ArgumentParser(description="Run full dataset batch")
     parser.add_argument("--input", type=str, default="data/easy_questions.json", help="Input questions JSON or JSONL file")
     parser.add_argument("--output", type=str, default="data/submission.jsonl", help="Output submission JSONL file")
-    parser.add_argument("--endpoint", type=str, default="https://openrouter.ai/api/v1", help="API endpoint")
+    parser.add_argument("--endpoint", type=str, default="https://openrouter.ai/api/v1/chat/completions", help="API endpoint (e.g. OpenRouter or Groq)")
     parser.add_argument("--api-key", type=str, default="EMPTY", help="API Key")
-    parser.add_argument("--model", type=str, default="qwen/qwen-2.5-7b-instruct", help="Model ID")
+    parser.add_argument("--model", type=str, default="qwen/qwen-2.5-72b-instruct:free", help="Model ID")
     parser.add_argument("--data-dir", type=str, default="data", help="Data directory containing tables and indexes")
     
     args = parser.parse_args()

@@ -18,24 +18,21 @@ class GenericLLMClient:
 
     def __init__(
         self,
-        endpoint: str = "https://openrouter.ai/api/v1",
+        endpoint: str = "https://openrouter.ai/api/v1/chat/completions",
         api_key: str = "EMPTY",
         model: str = "qwen/qwen-2.5-72b-instruct:free",
-        max_retries: int = 6,  # Tăng số lần thử lại từ 3 lên 6
-        retry_delay: float = 3.0,  # Thời gian chờ cơ bản là 3s (tăng dần 3, 6, 12, 24...)
+        max_retries: int = 6,
+        retry_delay: float = 3.0,
         timeout: int = 120,
     ):
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.model = model
         
-        # Sửa lỗi 404: OpenRouter API endpoint chuẩn
-        if self.endpoint.endswith("/chat/completions"):
-            self.chat_url = self.endpoint
-        elif self.endpoint.endswith("/api/v1"):
+        if not self.endpoint.endswith("/chat/completions"):
             self.chat_url = f"{self.endpoint}/chat/completions"
         else:
-            self.chat_url = f"{self.endpoint}/v1/chat/completions"
+            self.chat_url = self.endpoint
             
         self.max_retries = max_retries
         self.retry_delay = retry_delay
