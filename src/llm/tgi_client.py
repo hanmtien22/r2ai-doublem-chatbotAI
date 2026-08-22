@@ -53,6 +53,7 @@ class GenericLLMClient:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/anomalyco/r2ai", # OpenRouter requires referer
         }
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -60,8 +61,9 @@ class GenericLLMClient:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
+        # Tắt ép buộc json_object qua API vì nhiều model Free trên OpenRouter sẽ báo lỗi 400
+        # if json_mode:
+        #     payload["response_format"] = {"type": "json_object"}
 
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries):
