@@ -63,8 +63,9 @@ class GenericLLMClient:
         }
         
         # Hỗ trợ Groq / OpenRouter Json Mode nếu có schema (Nhưng không bắt buộc để tránh lỗi 400)
-        # if json_mode:
-        #     payload["response_format"] = {"type": "json_object"}
+        # Chỉ tự động kích hoạt json_object nếu đang dùng máy chủ vLLM Local (localhost) để tránh lỗi thiếu dấu phẩy
+        if json_mode and ("localhost" in self.endpoint or "127.0.0.1" in self.endpoint):
+            payload["response_format"] = {"type": "json_object"}
 
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries):

@@ -28,6 +28,15 @@ class QuestionOrchestrator:
         self.sandbox = Sandbox(timeout=15)
         self.verifier = ResultVerifier()
         self.compute_manager = RetryManager(self.code_gen, self.sandbox, self.verifier)
+        
+        # Thêm cache CSV vào RAM để tăng tốc
+        self._csv_cache = {}
+
+    def _get_cached_csv(self, csv_path: Path) -> pd.DataFrame:
+        path_str = str(csv_path)
+        if path_str not in self._csv_cache:
+            self._csv_cache[path_str] = pd.read_csv(csv_path, dtype={"item_code": str})
+        return self._csv_cache[path_str]
 
     def process_question(self, q_id: int, question: str) -> dict:
         logger.info(f"--- Processing Question {q_id} ---")
@@ -109,13 +118,15 @@ class QuestionOrchestrator:
                 if csv_path.name in matched_files:
                     continue
                 try:
-                    df = pd.read_csv(csv_path, dtype={"item_code": str})
+                    df = self._get_cached_csv(csv_path)
                     if "period" in df.columns and "value" in df.columns:
                         if years:
-                            df = df[df["period"].isin([int(y) for y in years])]
-                        if not df.empty:
+                            df_filtered = df[df["period"].isin([int(y) for y in years])]
+                        else:
+                            df_filtered = df
+                        if not df_filtered.empty:
                             matched_files.add(csv_path.name)
-                            for _, row in df.iterrows():
+                            for _, row in df_filtered.iterrows():
                                 all_rows.append([
                                     row.get("ticker", ticker.upper()),
                                     row.get("period", ""),

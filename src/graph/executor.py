@@ -39,6 +39,18 @@ Rules:
 5. If math is needed, only use the exact variable names created in previous steps.
 
 Produce valid JSON matching the ExecutionPlan schema.
+Output Example:
+{
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "fetch_data",
+      "inputs": {"ticker": "VNM", "period": 2023, "metric": "lợi nhuận sau thuế", "table_type": "IS"},
+      "output_variable": "vnm_profit_2023"
+    }
+  ],
+  "final_answer_variable": "vnm_profit_2023"
+}
 """
 
     def plan_node(self, state: AgentState) -> Dict:
@@ -46,21 +58,32 @@ Produce valid JSON matching the ExecutionPlan schema.
         query = state["query"]
         
         prompt = self._build_planner_prompt(query)
-        raw_response = self.llm_client.generate(prompt, schema=ExecutionPlan, temperature=0.1)
+        raw_response = self.llm_client.generate(prompt, schema=ExecutionPlan, temperature=0.1, json_mode=True)
         
         if not raw_response or not isinstance(raw_response, str):
             logger.error("Planner failed: LLM returned empty or non-string response")
             return {"plan": [], "current_step": 0, "error": "LLM returned empty response"}
 
+        import re
         try:
-            text = raw_response.strip()
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
-                text = text[start:end]
+            # Ưu tiên lấy block JSON nếu model bọc trong ```json ... ```
+            match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw_response, re.DOTALL)
+            if match:
+                text = match.group(1).strip()
+            else:
+                text = raw_response.strip()
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+                    
+            # Xử lý các lỗi cú pháp cơ bản thường gặp ở model nhỏ
+            text = re.sub(r',\s*}', '}', text)
+            text = re.sub(r',\s*]', ']', text)
+            
             response = json.loads(text)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Planner failed: cannot parse LLM response as JSON: {e}")
+            logger.error(f"Planner failed: cannot parse LLM response as JSON: {e}\nRaw Response: {raw_response}")
             return {"plan": [], "current_step": 0, "error": f"JSON parse error: {e}"}
 
         if not isinstance(response, dict):
